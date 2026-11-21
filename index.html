@@ -5,37 +5,52 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Wingfoil Sim</title>
 <style>
-  :root { --fg:#f4f7fa; --bg:#0b1a24; --accent:#ff7a59; }
+  :root { --fg:#f4f7fa; --bg:#0b1a24; --accent:#ff7a59; --ok:#5fd3b5; --warn:#ff4d4d; }
   html,body { margin:0; height:100%; overflow:hidden; background:var(--bg); font-family: system-ui, sans-serif; }
   canvas { display:block; }
-  #hud { position:fixed; left:16px; top:16px; color:var(--fg); text-shadow:0 1px 3px #0008; pointer-events:none; }
+  #hud { position:fixed; left:16px; top:16px; color:var(--fg); text-shadow:0 1px 3px #000a; pointer-events:none; width:230px; }
   #speed { font-size:44px; font-weight:700; line-height:1; }
   #speed small { font-size:16px; font-weight:500; opacity:.8; }
-  .row { font-size:14px; opacity:.9; margin-top:4px; }
-  #mode { font-weight:700; color:var(--accent); text-shadow:0 1px 2px #000c; }
+  .row { font-size:14px; margin-top:4px; }
+  #mode { font-weight:700; color:var(--accent); }
+  .gauge { position:relative; height:8px; background:#0006; border-radius:4px; margin-top:3px; overflow:hidden; }
+  .gauge .fill { position:absolute; top:0; bottom:0; background:var(--fg); border-radius:4px; }
+  .gauge .band { position:absolute; top:0; bottom:0; background:#5fd3b555; }
+  .gauge .mid { position:absolute; top:0; bottom:0; left:50%; width:2px; background:#fff8; }
+  .lbl { font-size:11px; opacity:.85; margin-top:7px; display:flex; justify-content:space-between; }
   #wind { position:fixed; right:20px; top:16px; width:84px; height:84px; border-radius:50%;
           background:#0006; display:grid; place-items:center; color:var(--fg); font-size:12px; }
   #arrow { position:absolute; width:4px; height:54px; background:var(--fg); border-radius:2px; }
   #arrow::after { content:""; position:absolute; bottom:-6px; left:-6px; border:8px solid transparent; border-top:12px solid var(--fg); }
-  #windtxt { position:absolute; bottom:-22px; width:120px; text-align:center; }
-  #help { position:fixed; left:16px; bottom:16px; color:var(--fg); font-size:13px; opacity:.85; background:#0005; padding:8px 12px; border-radius:8px; line-height:1.6; }
+  #windtxt { position:absolute; bottom:-22px; width:140px; text-align:center; text-shadow:0 1px 3px #000a; }
+  #map { position:fixed; right:16px; top:130px; width:170px; height:170px; border-radius:10px; background:#0006; }
+  #help { position:fixed; left:16px; bottom:16px; color:var(--fg); font-size:13px; opacity:.9; background:#0006; padding:8px 12px; border-radius:8px; line-height:1.6; }
   #help b { color:var(--accent); }
+  #toast { position:fixed; left:50%; top:22%; transform:translateX(-50%); color:#fff; font-size:22px; font-weight:700; text-shadow:0 2px 6px #000c; opacity:0; transition:opacity .25s; pointer-events:none; }
   #rec { position:fixed; right:20px; bottom:16px; color:#fff; background:#d33; padding:4px 10px; border-radius:6px; font-weight:700; display:none; }
-  #stam { width:120px; height:6px; background:#fff3; border-radius:3px; margin-top:6px; }
-  #stam div { height:100%; background:var(--accent); border-radius:3px; }
 </style>
 </head>
 <body>
 <div id="hud">
   <div id="speed">0.0 <small>kn</small></div>
   <div class="row"><span id="mode">Displacement</span> · <span id="pos">Beam reach</span></div>
-  <div class="row">Foil height <span id="height">0</span> cm</div>
-  <div id="stam"><div></div></div>
+  <div class="row">Ride height <span id="height">0</span> cm · foil depth <span id="depth">0</span> cm</div>
+  <div class="lbl"><span>wing sheet</span><span id="aoa">0°</span></div>
+  <div class="gauge" id="gSheet"><div class="band"></div><div class="fill"></div></div>
+  <div class="lbl"><span>front foot</span><span id="assist">assist on</span><span>back foot</span></div>
+  <div class="gauge" id="gFeet"><div class="mid"></div><div class="fill"></div></div>
+  <div class="lbl"><span>foil depth</span></div>
+  <div class="gauge" id="gDepth"><div class="fill"></div></div>
+  <div class="lbl"><span>stamina</span></div>
+  <div class="gauge" id="gStam"><div class="fill" style="background:var(--accent)"></div></div>
 </div>
 <div id="wind"><div id="arrow"></div><div id="windtxt">wind</div></div>
+<canvas id="map" width="170" height="170"></canvas>
+<div id="toast"></div>
 <div id="help">
-  <b>A / D</b> steer · <b>W</b> power · <b>S</b> depower · <b>Space</b> pump<br>
-  <b>C</b> camera · <b>P</b> autopilot · <b>R</b> record video · drag mouse to orbit
+  <b>A/D</b> steer · <b>W/S</b> front / back foot · <b>↑/↓</b> or <b>wheel</b> sheet in / out<br>
+  <b>Space</b> leg pump · <b>E</b> wing pump (both together = combo) · <b>T</b> foot assist<br>
+  <b>C</b> camera · <b>M</b> wind map · <b>P</b> autopilot · <b>R</b> record · drag to orbit
 </div>
 <div id="rec">● REC</div>
 
@@ -49,7 +64,12 @@
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 
-// ---------------------------------------------------------------- renderer / scene
+const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+const clamp = THREE.MathUtils.clamp, lerp = THREE.MathUtils.lerp, D2R = Math.PI / 180;
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const _up = V3(0, 1, 0);
+
+// ================================================================ renderer / scene
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
@@ -58,150 +78,142 @@ renderer.toneMappingExposure = 0.55;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
-
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 8000);
 
-// sun
 const SUN_ELEV = 14, SUN_AZ = 200;
-const sunDir = new THREE.Vector3().setFromSphericalCoords(1,
-  THREE.MathUtils.degToRad(90 - SUN_ELEV), THREE.MathUtils.degToRad(SUN_AZ));
-
-// sky
+const sunDir = new THREE.Vector3().setFromSphericalCoords(1, (90 - SUN_ELEV) * D2R, SUN_AZ * D2R);
 const sky = new Sky();
 sky.scale.setScalar(10000);
-const su = sky.material.uniforms;
-su.turbidity.value = 4; su.rayleigh.value = 1.6;
-su.mieCoefficient.value = 0.004; su.mieDirectionalG.value = 0.85;
-su.sunPosition.value.copy(sunDir);
+Object.entries({ turbidity: 4, rayleigh: 1.6, mieCoefficient: 0.004, mieDirectionalG: 0.85 })
+  .forEach(([k, v]) => { sky.material.uniforms[k].value = v; });
+sky.material.uniforms.sunPosition.value.copy(sunDir);
 scene.add(sky);
-
-// bake sky into a cubemap: used for water reflections + PBR environment
 const cubeRT = new THREE.WebGLCubeRenderTarget(512, { type: THREE.HalfFloatType });
-const cubeCam = new THREE.CubeCamera(1, 20000, cubeRT);
-cubeCam.update(renderer, scene);
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromCubemap(cubeRT.texture).texture;
-
+new THREE.CubeCamera(1, 20000, cubeRT).update(renderer, scene);
+scene.environment = new THREE.PMREMGenerator(renderer).fromCubemap(cubeRT.texture).texture;
 const HORIZON = new THREE.Color(0.62, 0.72, 0.80);
 scene.fog = new THREE.Fog(HORIZON, 300, 4500);
 
 const sunLight = new THREE.DirectionalLight(0xfff1dd, 2.2);
-sunLight.position.copy(sunDir).multiplyScalar(50);
 sunLight.castShadow = true;
 sunLight.shadow.mapSize.set(2048, 2048);
-Object.assign(sunLight.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 1, far: 120 });
+Object.assign(sunLight.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7, near: 1, far: 120 });
 sunLight.shadow.bias = -0.0005;
-scene.add(sunLight, sunLight.target);
-scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x1a3a48, 0.5));
+scene.add(sunLight, sunLight.target, new THREE.HemisphereLight(0xbfd8ff, 0x1a3a48, 0.5));
 
-// ---------------------------------------------------------------- waves (shared by GPU and physics)
-// dirX, dirZ, amplitude (m), wavelength (m). Waves travel roughly downwind (-Z).
+// ================================================================ wind field (same formula in JS and GLSL)
+// True wind blows toward -Z (comes FROM +Z). Gust patches drift downwind; a slow band makes a stronger zone.
+const WB = 7.5;   // base wind, m/s (~15 kn)
+function windFactor(x, z, t) {
+  const qx = x, qz = z + WB * 0.9 * t;
+  const g1 = Math.sin(qx * 0.011 + 1.3 * Math.sin(qz * 0.007)) * Math.sin(qz * 0.009 + 1.1 * Math.sin(qx * 0.006 + 0.5));
+  const g2 = Math.sin(qx * 0.031 + qz * 0.017 + 2.0) * Math.sin(qz * 0.027 - qx * 0.013);
+  return 1 + 0.24 * g1 + 0.1 * g2 + 0.15 * Math.sin(x * 0.0015 + 0.7);
+}
+const WIND_GLSL = /* glsl */`
+  uniform float uWB;
+  float windFactor(vec2 p, float t) {
+    vec2 q = vec2(p.x, p.y + uWB * 0.9 * t);
+    float g1 = sin(q.x * 0.011 + 1.3 * sin(q.y * 0.007)) * sin(q.y * 0.009 + 1.1 * sin(q.x * 0.006 + 0.5));
+    float g2 = sin(q.x * 0.031 + q.y * 0.017 + 2.0) * sin(q.y * 0.027 - q.x * 0.013);
+    return 1.0 + 0.24 * g1 + 0.1 * g2 + 0.15 * sin(p.x * 0.0015 + 0.7);
+  }`;
+
+// ================================================================ waves (same in GPU and physics)
+// dirX, dirZ, amplitude (m), wavelength (m). The first is a long downwind swell you can ride.
 const WAVES = [
-  [ 0.10, -1.00, 0.30, 42], [-0.35, -0.94, 0.20, 24], [ 0.45, -0.89, 0.13, 14],
-  [-0.15, -0.99, 0.07,  8], [ 0.70, -0.71, 0.04, 5.0], [-0.60, -0.80, 0.03, 3.6],
+  [ 0.05, -1.00, 0.30, 70], [ 0.10, -1.00, 0.18, 38], [-0.35, -0.94, 0.15, 22], [ 0.45, -0.89, 0.10, 13],
+  [-0.15, -0.99, 0.06,  8], [ 0.70, -0.71, 0.035, 5.0], [-0.60, -0.80, 0.025, 3.6],
 ].map(([x, z, a, l]) => { const n = Math.hypot(x, z); return [x / n, z / n, a, l]; });
-const STEEP = 0.55;
-const PHASES = WAVES.map((_, i) => i * 1.7);
-
+const NW = WAVES.length, STEEP = 0.55, PHASES = WAVES.map((_, i) => i * 1.7);
 function waveHeight(x, z, t) {
   let y = 0;
-  for (let i = 0; i < WAVES.length; i++) {
-    const [dx, dz, a, l] = WAVES[i];
-    const k = 2 * Math.PI / l, w = Math.sqrt(9.81 * k);
-    y += a * Math.sin(k * (dx * x + dz * z) - w * t + PHASES[i]);
+  for (let i = 0; i < NW; i++) {
+    const [dx, dz, a, l] = WAVES[i], k = 2 * Math.PI / l;
+    y += a * Math.sin(k * (dx * x + dz * z) - Math.sqrt(9.81 * k) * t + PHASES[i]);
   }
   return y;
 }
 
-// ---------------------------------------------------------------- ocean
+// ================================================================ ocean
 function makeOceanGeometry(R, N) {
-  // grid densest at the centre: coordinate = R * s^3, s in [-1, 1]
-  const pos = new Float32Array((N + 1) * (N + 1) * 3), idx = [];
-  const f = s => R * s * s * s;
+  const pos = new Float32Array((N + 1) * (N + 1) * 3), idx = [], f = s => R * s * s * s;   // dense centre
   for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
-    const k = (j * (N + 1) + i) * 3;
-    pos[k] = f(i / N * 2 - 1); pos[k + 1] = 0; pos[k + 2] = f(j / N * 2 - 1);
+    const k = (j * (N + 1) + i) * 3; pos[k] = f(i / N * 2 - 1); pos[k + 2] = f(j / N * 2 - 1);
   }
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-    const a = j * (N + 1) + i, b = a + 1, c = a + N + 1, d = c + 1;
-    idx.push(a, c, b, b, c, d);
+    const a = j * (N + 1) + i, b = a + 1, c = a + N + 1, d = c + 1; idx.push(a, c, b, b, c, d);
   }
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  g.setIndex(idx);
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setIndex(idx);
   return g;
 }
-
 const oceanMat = new THREE.ShaderMaterial({
   uniforms: {
-    uTime: { value: 0 },
-    uWaves: { value: WAVES.map((w, i) => new THREE.Vector4(w[0], w[1], w[2], w[3])) },
-    uPhase: { value: PHASES },
-    uSteep: { value: STEEP },
-    uSky: { value: cubeRT.texture },
-    uSun: { value: sunDir },
-    uHorizon: { value: HORIZON },
+    uTime: { value: 0 }, uWB: { value: WB }, uSteep: { value: STEEP },
+    uWaves: { value: WAVES.map(w => new THREE.Vector4(...w)) }, uPhase: { value: PHASES },
+    uSky: { value: cubeRT.texture }, uSun: { value: sunDir },
   },
   vertexShader: /* glsl */`
-    uniform float uTime, uSteep;
-    uniform vec4 uWaves[6];
-    uniform float uPhase[6];
+    uniform float uTime, uSteep; uniform vec4 uWaves[${NW}]; uniform float uPhase[${NW}];
     varying vec3 vWorld; varying vec3 vN; varying float vCrest; varying float vH;
     void main() {
       vec3 p = (modelMatrix * vec4(position, 1.0)).xyz;
       float dist = length(p.xz - cameraPosition.xz);
-      vec3 disp = vec3(0.0); vec3 n = vec3(0.0, 1.0, 0.0); float crest = 0.0;
-      for (int i = 0; i < 6; i++) {
+      vec3 disp = vec3(0.0), n = vec3(0.0, 1.0, 0.0); float crest = 0.0;
+      for (int i = 0; i < ${NW}; i++) {
         vec4 w = uWaves[i];
-        float fade = clamp(1.0 - dist / (w.w * 40.0), 0.0, 1.0);
-        float A = w.z * fade;
-        float k = 6.28318 / w.w, om = sqrt(9.81 * k);
-        float Q = uSteep / (k * w.z * 6.0);
-        float f = k * dot(w.xy, p.xz) - om * uTime + uPhase[i];
-        float c = cos(f), s = sin(f);
-        disp.x += Q * A * w.x * c; disp.z += Q * A * w.y * c; disp.y += A * s;
-        n.x -= w.x * k * A * c; n.z -= w.y * k * A * c; n.y -= Q * k * A * s;
+        float A = w.z * clamp(1.0 - dist / (w.w * 40.0), 0.0, 1.0);
+        float k = 6.28318 / w.w, om = sqrt(9.81 * k), Q = uSteep / (k * w.z * ${NW}.0);
+        float f = k * dot(w.xy, p.xz) - om * uTime + uPhase[i], c = cos(f), s = sin(f);
+        disp += vec3(Q * A * w.x * c, A * s, Q * A * w.y * c);
+        n -= vec3(w.x * k * A * c, Q * k * A * s, w.y * k * A * c);
         crest += Q * k * A * s;
       }
-      p += disp;
-      vWorld = p; vN = n; vCrest = crest; vH = disp.y;
+      p += disp; vWorld = p; vN = n; vCrest = crest; vH = disp.y;
       gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
     }`,
   fragmentShader: /* glsl */`
-    uniform float uTime; uniform samplerCube uSky; uniform vec3 uSun; uniform vec3 uHorizon;
+    uniform float uTime; uniform samplerCube uSky; uniform vec3 uSun;
     varying vec3 vWorld; varying vec3 vN; varying float vCrest; varying float vH;
+    ${WIND_GLSL}
     void main() {
       vec3 V = cameraPosition - vWorld; float dist = length(V); V /= dist;
-      // small ripples: analytic gradient of a sum of short sines, faded with distance
+      float wf = windFactor(vWorld.xz, uTime);
+      float gust = smoothstep(0.85, 1.35, wf);                 // 0 = lull, 1 = strong gust
+      // wind lanes: streaks parallel to the wind (wind blows along -Z)
+      float lanes = 0.5 + 0.5 * sin(vWorld.x * 0.45 + 1.7 * sin(vWorld.z * 0.03 + uTime * 0.2));
+      float rough = mix(0.3, 1.4, gust) * (0.9 + 0.2 * lanes);
+      // capillary ripples aligned with the local wind, amplitude follows wind strength
       vec2 g = vec2(0.0);
-      float rf = clamp(1.0 - dist / 160.0, 0.0, 1.0);
-      for (int i = 0; i < 8; i++) {
+      float rf = clamp(1.0 - dist / 220.0, 0.0, 1.0);
+      for (int i = 0; i < 9; i++) {
         float fi = float(i);
-        float ang = fi * 2.399 + 0.3 + 0.25 * sin(uTime * 0.05 + fi);
+        float ang = -1.5708 + (fract(fi * 0.618) - 0.5) * 2.6 + 0.2 * sin(uTime * 0.05 + fi);
         vec2 d = vec2(cos(ang), sin(ang));
-        float L = 0.37 + fi * fi * 0.045 + fract(fi * 0.618) * 0.3;
+        float L = 0.35 + fi * fi * 0.04 + fract(fi * 0.381) * 0.3;
         float k = 6.28318 / L, om = sqrt(9.81 * k);
-        float a = 0.009 * L;
-        g += d * a * k * cos(k * dot(d, vWorld.xz) - om * uTime + fi * 3.1);
+        g += d * 0.009 * L * k * cos(k * dot(d, vWorld.xz) - om * uTime + fi * 3.1);
       }
-      vec3 N = normalize(vN + vec3(-g.x, 0.0, -g.y) * (0.25 + 0.75 * rf));
+      vec3 N = normalize(vN + vec3(-g.x, 0.0, -g.y) * rough * (0.3 + 0.7 * rf));
       if (dot(N, V) < 0.02) N = normalize(N + V * (0.02 - dot(N, V)));
       vec3 R = reflect(-V, N); R.y = abs(R.y);
-      vec3 refl = textureCube(uSky, R).rgb;
+      vec3 refl = textureCube(uSky, R).rgb * mix(1.1, 0.6, gust);  // gusts read as dark patches
       float fres = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
-      // water body: deep blue + teal scattering on sunlit wave tops
-      vec3 deep = vec3(0.004, 0.035, 0.06);
-      vec3 teal = vec3(0.02, 0.22, 0.24);
-      float sss = clamp(vH * 1.2 + 0.4, 0.0, 1.0) * (0.4 + 0.6 * max(dot(-V.xz, uSun.xz), 0.0));
-      vec3 body = deep + teal * sss * 0.6;
-      vec3 col = mix(body, refl, fres);
+      vec3 deep = vec3(0.004, 0.035, 0.06), teal = vec3(0.02, 0.22, 0.24);
+      float sss = clamp(vH * 1.0 + 0.4, 0.0, 1.0) * (0.4 + 0.6 * max(dot(-V.xz, uSun.xz), 0.0));
+      vec3 col = mix(deep + teal * sss * 0.6, refl, fres);
       float sd = max(dot(R, uSun), 0.0);
       col += vec3(1.0, 0.92, 0.78) * (pow(sd, 900.0) * 30.0 + pow(sd, 90.0) * 0.6);
-      // foam on steep crests
-      float foam = smoothstep(0.55, 0.9, vCrest) * (0.6 + 0.4 * sin(vWorld.x * 3.0 + vWorld.z * 2.0 + uTime));
-      col = mix(col, vec3(0.85, 0.9, 0.92), foam * 0.5);
-      // aerial perspective
+      // foam: steep crests + whitecaps that appear only in strong wind
+      float foam = smoothstep(0.6, 0.95, vCrest) * 0.5;
+      vec2 q = vWorld.xz + vec2(0.0, uWB * 0.6 * uTime);
+      // small whitecaps, stretched along the wind, broken up by the ripples
+      float wc = smoothstep(0.96, 0.995, sin(q.x * 1.9 + sin(q.y * 0.4) * 2.0) * sin(q.y * 0.8 + sin(q.x * 0.5) * 3.0));
+      wc *= smoothstep(0.0, 0.6, g.x * g.y * 40.0 + 0.3);
+      foam += wc * smoothstep(1.12, 1.4, wf) * smoothstep(-0.1, 0.25, vH) * (1.0 - smoothstep(150.0, 400.0, dist));
+      col = mix(col, vec3(0.85, 0.9, 0.92), clamp(foam, 0.0, 0.85));
       vec3 hz = textureCube(uSky, normalize(vec3(-V.x, 0.03, -V.z))).rgb;
       col = mix(col, hz, 1.0 - exp(-dist * 0.0009));
       gl_FragColor = vec4(col, 1.0);
@@ -213,7 +225,7 @@ const ocean = new THREE.Mesh(makeOceanGeometry(4000, 480), oceanMat);
 ocean.frustumCulled = false;
 scene.add(ocean);
 
-// ---------------------------------------------------------------- materials
+// ================================================================ materials
 const M = {
   deck: new THREE.MeshStandardMaterial({ color: 0xf2f0ea, roughness: 0.35 }),
   rail: new THREE.MeshStandardMaterial({ color: 0x1d6f7a, roughness: 0.4 }),
@@ -223,15 +235,13 @@ const M = {
   vest: new THREE.MeshStandardMaterial({ color: 0xff7a59, roughness: 0.55 }),
   skin: new THREE.MeshStandardMaterial({ color: 0xc48a68, roughness: 0.6 }),
   helmet: new THREE.MeshStandardMaterial({ color: 0xf5f5f0, roughness: 0.3 }),
-  canopy: new THREE.MeshPhysicalMaterial({ color: 0xff8a5c, roughness: 0.45, transmission: 0.25,
-           transparent: true, opacity: 0.92, side: THREE.DoubleSide }),
-  canopy2: new THREE.MeshPhysicalMaterial({ color: 0x1fa3a8, roughness: 0.45, transmission: 0.2,
-           transparent: true, opacity: 0.92, side: THREE.DoubleSide }),
-  tube: new THREE.MeshStandardMaterial({ color: 0x17323b, roughness: 0.5 }),
+  dacron: new THREE.MeshStandardMaterial({ color: 0x24343c, roughness: 0.8 }),
+  handle: new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.7 }),
 };
 const shadowy = o => { o.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } }); return o; };
 
-// ---------------------------------------------------------------- board + foil (board frame: +Z = nose, origin = bottom of hull)
+// ================================================================ board + foil (board frame: +Z nose, origin = hull bottom)
+const MAST = 0.9, FW_Z = 0.12;   // front wing sits MAST below the hull, FW_Z ahead of the board centre
 function makeBoard() {
   const g = new THREE.Group();
   const L = 1.55, W = 0.62, H = 0.13;
@@ -241,149 +251,176 @@ function makeBoard() {
   s.bezierCurveTo(W / 2, L * 0.3, W * 0.3, L / 2, 0, L / 2);
   s.bezierCurveTo(-W * 0.3, L / 2, -W / 2, L * 0.3, -W / 2, 0);
   s.bezierCurveTo(-W / 2, -L * 0.3, -W * 0.42, -L / 2, 0, -L / 2);
-  const ex = (shape, depth, bevel) => {
-    const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: bevel,
-      bevelSize: bevel, bevelSegments: 4, curveSegments: 24 });
-    geo.rotateX(Math.PI / 2);   // shape y -> +Z (nose), extrusion -> -Y
-    return geo;
+  const ex = (depth, bevel) => {
+    const geo = new THREE.ExtrudeGeometry(s, { depth, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 4, curveSegments: 24 });
+    geo.rotateX(Math.PI / 2); return geo;
   };
-  const hull = new THREE.Mesh(ex(s, H - 0.06, 0.03), M.deck);
-  hull.position.y = H - 0.03;
-  g.add(hull);
-  const railStripe = new THREE.Mesh(ex(s, 0.03, 0.031), M.rail);
-  railStripe.position.y = 0.045;
-  railStripe.scale.set(1.002, 1, 1.002);
-  g.add(railStripe);
-  const pad = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.012, 0.95), M.pad);
-  pad.position.set(0, H + 0.005, -0.12);
-  g.add(pad);
-  // foil
+  const hull = new THREE.Mesh(ex(H - 0.06, 0.03), M.deck); hull.position.y = H - 0.03;
+  const stripe = new THREE.Mesh(ex(0.03, 0.031), M.rail); stripe.position.y = 0.045; stripe.scale.set(1.002, 1, 1.002);
+  const pad = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.012, 0.95), M.pad); pad.position.set(0, H + 0.005, -0.12);
+  g.add(hull, stripe, pad);
   const foil = new THREE.Group();
-  const mastL = 0.9;
-  const mast = new THREE.Mesh(new THREE.BoxGeometry(0.018, mastL, 0.12), M.carbon);
-  mast.position.y = -mastL / 2;
-  foil.add(mast);
+  const mast = new THREE.Mesh(new THREE.BoxGeometry(0.018, MAST, 0.12), M.carbon); mast.position.y = -MAST / 2;
   const fus = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.014, 0.75, 12), M.carbon);
-  fus.rotation.x = Math.PI / 2; fus.position.set(0, -mastL, 0.05);
-  foil.add(fus);
+  fus.rotation.x = Math.PI / 2; fus.position.set(0, -MAST, 0.05);
   const wingShape = (span, chord) => {
     const w = new THREE.Shape();
-    w.moveTo(-span / 2, 0);
-    w.quadraticCurveTo(0, chord * 1.3, span / 2, 0);
-    w.quadraticCurveTo(0, -chord * 0.25, -span / 2, 0);
-    const geo = new THREE.ExtrudeGeometry(w, { depth: 0.012, bevelEnabled: false, curveSegments: 24 });
-    geo.rotateX(Math.PI / 2);
-    return geo;
+    w.moveTo(-span / 2, 0); w.quadraticCurveTo(0, chord * 1.3, span / 2, 0); w.quadraticCurveTo(0, -chord * 0.25, -span / 2, 0);
+    const geo = new THREE.ExtrudeGeometry(w, { depth: 0.012, bevelEnabled: false, curveSegments: 24 }); geo.rotateX(Math.PI / 2); return geo;
   };
-  const fw = new THREE.Mesh(wingShape(0.85, 0.14), M.carbon); fw.position.set(0, -mastL + 0.01, 0.3);
-  const st = new THREE.Mesh(wingShape(0.34, 0.07), M.carbon); st.position.set(0, -mastL + 0.01, -0.32);
-  foil.add(fw, st);
-  foil.position.z = -0.18;
+  const fw = new THREE.Mesh(wingShape(0.85, 0.14), M.carbon); fw.position.set(0, -MAST + 0.01, 0.3);
+  const st = new THREE.Mesh(wingShape(0.34, 0.07), M.carbon); st.position.set(0, -MAST + 0.01, -0.32);
+  foil.add(mast, fus, fw, st);
+  foil.position.z = -0.18;            // front wing ends up at z = 0.12 = FW_Z
   g.add(foil);
   return shadowy(g);
 }
 
-// ---------------------------------------------------------------- inflatable wing (wing frame: span = X, chord = -Z from leading edge, canopy normal = +Y)
+// ================================================================ inflatable wing
+// Wing frame: span = X, leading edge at z≈0, chord runs toward -Z, +Y = strut/handle side (faces the rider and the wind).
+// The leading-edge arc bends the tips toward +Y (toward the rider); the canopy billows away (-Y, leeward).
+const WING = { half: 1.75, c0: 1.5, arc: 0.85, sweep: 0.3, NS: 44, NC: 14 };
+const wingS = i => -Math.cos(Math.PI * i / WING.NS);                    // cosine spacing: detail at the tips
+const wingArcY = s => WING.arc * s * s;
+const wingLeZ = s => -WING.sweep * s * s;
+const wingChord = s => WING.c0 * Math.pow(Math.max(0, 1 - Math.pow(Math.abs(s), 2.4)), 0.55) + 0.05;
+const wingLeR = s => 0.12 * (1 - 0.6 * Math.pow(Math.abs(s), 1.5));
+function wingTexture() {
+  const c = document.createElement('canvas'); c.width = 1024; c.height = 512;
+  const x = c.getContext('2d');
+  x.fillStyle = '#f2efe6'; x.fillRect(0, 0, 1024, 512);                     // base cloth
+  x.fillStyle = '#ff7a59'; x.fillRect(0, 0, 1024, 120);                     // leading panel (v < 0.23)
+  x.fillStyle = '#1fa3a8'; x.fillRect(0, 0, 170, 512); x.fillRect(854, 0, 170, 512);   // tips
+  x.fillStyle = '#ff7a59'; x.beginPath(); x.moveTo(170, 512); x.lineTo(330, 120); x.lineTo(380, 120); x.lineTo(250, 512); x.fill();
+  x.beginPath(); x.moveTo(854, 512); x.lineTo(694, 120); x.lineTo(644, 120); x.lineTo(774, 512); x.fill();
+  x.fillStyle = 'rgba(200,225,235,0.35)';                                   // clear windows either side of the strut
+  x.fillRect(430, 170, 60, 150); x.fillRect(534, 170, 60, 150);
+  x.strokeStyle = 'rgba(30,40,45,0.35)'; x.lineWidth = 3;                   // seams
+  for (const u of [170, 300, 420, 604, 724, 854]) { x.beginPath(); x.moveTo(u, 0); x.lineTo(u, 512); x.stroke(); }
+  x.beginPath(); x.moveTo(0, 120); x.lineTo(1024, 120); x.stroke();
+  x.fillStyle = '#2a2f33'; x.fillRect(0, 498, 1024, 14);                    // trailing-edge binding
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  return t;
+}
 function makeWing() {
   const g = new THREE.Group();
-  const half = 1.8, chord0 = 1.45, NS = 40, NC = 8;
-  const leY = x => -0.55 * (x / half) ** 2;                 // anhedral arc
-  const chord = x => chord0 * Math.sqrt(Math.max(0, 1 - (x / half) ** 2)) + 0.05;
-  // canopy surface, two colour panels (centre / tips)
-  const makePanel = (x0, x1, mat) => {
-    const pos = [], idx = [];
-    const ns = Math.max(2, Math.round(NS * (x1 - x0) / (2 * half)));
-    for (let i = 0; i <= ns; i++) {
-      const x = x0 + (x1 - x0) * i / ns, c = chord(x);
-      for (let j = 0; j <= NC; j++) {
-        const u = j / NC;
-        const camber = 0.09 * c * Math.sin(Math.PI * u) * (1 - 0.5 * u);
-        pos.push(x * (1 - 0.06 * u), leY(x) + camber, -c * u);
-      }
-    }
-    for (let i = 0; i < ns; i++) for (let j = 0; j < NC; j++) {
-      const a = i * (NC + 1) + j, b = a + 1, c = a + NC + 1, d = c + 1;
-      idx.push(a, b, c, b, d, c);
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geo.setIndex(idx); geo.computeVertexNormals();
-    return new THREE.Mesh(geo, mat);
-  };
-  g.add(makePanel(-half, -0.55, M.canopy2), makePanel(-0.55, 0.55, M.canopy), makePanel(0.55, half, M.canopy2));
-  // leading-edge tube and centre strut
-  const lePts = []; for (let i = 0; i <= 30; i++) { const x = -half + 2 * half * i / 30; lePts.push(new THREE.Vector3(x, leY(x) + 0.02, 0.02)); }
-  g.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(lePts), 60, 0.075, 12), M.tube));
-  const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.035, chord0, 12), M.tube);
-  strut.rotation.x = Math.PI / 2; strut.position.set(0, 0.06, -chord0 / 2);
-  g.add(strut);
-  // handles under the strut
-  for (const z of [-0.38, -0.95]) {
-    const h = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.015, 8, 16, Math.PI), M.carbon);
-    h.rotation.set(0, Math.PI / 2, Math.PI); h.position.set(0, 0.0, z);
-    g.add(h);
+  const { NS, NC } = WING;
+  // canopy: positions rewritten every frame (billow + flutter)
+  const pos = new Float32Array((NS + 1) * (NC + 1) * 3), uv = [], idx = [];
+  for (let i = 0; i <= NS; i++) for (let j = 0; j <= NC; j++) uv.push((wingS(i) + 1) / 2, 1 - j / NC);
+  for (let i = 0; i < NS; i++) for (let j = 0; j < NC; j++) {
+    const a = i * (NC + 1) + j, b = a + 1, c = a + NC + 1, d = c + 1; idx.push(a, b, c, b, d, c);
   }
-  return shadowy(g);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  const canopy = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: wingTexture(), roughness: 0.6,
+    side: THREE.DoubleSide, transparent: true, opacity: 0.93 }));
+  g.add(canopy);
+  // leading-edge tube with tapering radius
+  const pts = []; for (let i = 0; i <= 60; i++) { const s = -1 + 2 * i / 60; pts.push(V3(s * WING.half, wingArcY(s), wingLeZ(s))); }
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const RS = 14, TS = 90, tube = new THREE.TubeGeometry(curve, TS, 1, RS, false);
+  const tp = tube.attributes.position;
+  for (let i = 0; i <= TS; i++) {
+    const c = curve.getPointAt(i / TS), r = wingLeR(-1 + 2 * i / TS);
+    for (let j = 0; j <= RS; j++) {
+      const k = i * (RS + 1) + j;
+      tp.setXYZ(k, c.x + (tp.getX(k) - c.x) * r, c.y + (tp.getY(k) - c.y) * r, c.z + (tp.getZ(k) - c.z) * r);
+    }
+  }
+  tube.computeVertexNormals();
+  g.add(new THREE.Mesh(tube, M.dacron));
+  // end caps
+  for (const s of [-1, 1]) { const cap = new THREE.Mesh(new THREE.SphereGeometry(wingLeR(s), 10, 8), M.dacron); cap.position.set(s * WING.half, wingArcY(s), wingLeZ(s)); g.add(cap); }
+  // centre strut on the +Y side, tapering toward the trailing edge
+  const strutGeo = new THREE.CylinderGeometry(0.075, 0.03, WING.c0 - 0.05, 14);
+  strutGeo.rotateX(Math.PI / 2);                     // +Y (top radius) -> +Z (leading edge)
+  const strut = new THREE.Mesh(strutGeo, M.dacron); strut.position.set(0, 0.05, -(WING.c0 - 0.05) / 2 - 0.05);
+  g.add(strut);
+  // two handles on the strut (+Y side), where the hands go
+  WING.handles = [V3(0, 0.15, -0.4), V3(0, 0.13, -0.98)];
+  for (const h of WING.handles) {
+    const t = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.018, 8, 16, Math.PI), M.handle);
+    t.rotation.y = Math.PI / 2; t.position.set(0, h.y - 0.08, h.z); g.add(t);
+  }
+  shadowy(g);
+  canopy.castShadow = true;
+  return { group: g, canopy };
+}
+function updateCanopy(canopy, billow, luff, t) {
+  const p = canopy.geometry.attributes.position, { NS, NC, half } = WING;
+  for (let i = 0; i <= NS; i++) {
+    const s = wingS(i), c = wingChord(s), r = wingLeR(s);
+    for (let j = 0; j <= NC; j++) {
+      const u = j / NC;
+      const camber = billow * c * Math.sin(Math.PI * Math.pow(u, 0.8)) * (1 - 0.35 * u);
+      // luffing: the trailing half flaps when the wing is sheeted out
+      const flap = luff * 0.09 * c * Math.sin(14 * t + s * 5 - u * 7) * smooth(0.3, 1, u);
+      const k = (i * (NC + 1) + j) * 3;
+      p.array[k] = s * half * (1 - 0.05 * u);
+      p.array[k + 1] = wingArcY(s) * (1 - 0.15 * u) - camber - flap;
+      p.array[k + 2] = wingLeZ(s) - r * 0.4 - c * u;
+    }
+  }
+  p.needsUpdate = true;
+  canopy.geometry.computeVertexNormals();
 }
 
-// ---------------------------------------------------------------- rider (rider frame: origin between feet, chest faces +Z, stance along X)
+// ================================================================ rider (rider frame: origin between feet, chest faces +Z, stance along X)
 function makeRider() {
   const g = new THREE.Group();
-  // fixed-length segments; IK keeps joint distances equal to these lengths
-  const seg = (r, len, mat) => { const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, Math.max(0.01, len), 6, 12), mat); g.add(m); return m; };
-  const parts = {
+  const seg = (r, len, mat) => { const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 6, 12), mat); g.add(m); return m; };
+  const P = {
     thighL: seg(0.08, 0.42, M.suit), shinL: seg(0.062, 0.42, M.suit), thighR: seg(0.08, 0.42, M.suit), shinR: seg(0.062, 0.42, M.suit),
     torso: seg(0.17, 0.32, M.vest), uArmL: seg(0.052, 0.28, M.suit), fArmL: seg(0.044, 0.28, M.skin),
     uArmR: seg(0.052, 0.28, M.suit), fArmR: seg(0.044, 0.28, M.skin), neck: seg(0.055, 0.08, M.skin),
   };
-  const hips = new THREE.Mesh(new THREE.SphereGeometry(0.15, 16, 12), M.suit); hips.scale.set(1.25, 0.8, 0.9); g.add(hips); parts.hips = hips;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 20, 16), M.skin);
+  P.hips = new THREE.Mesh(new THREE.SphereGeometry(0.15, 16, 12), M.suit); P.hips.scale.set(1.25, 0.8, 0.9);
+  P.head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 20, 16), M.skin);
   const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.125, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), M.helmet);
-  head.add(helmet); helmet.position.y = 0.01; helmet.rotation.x = -0.25;
-  g.add(head); parts.head = head;
-  for (const n of ['footL', 'footR']) { const f = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.26), M.suit); g.add(f); parts[n] = f; }
-  return { group: shadowy(g), parts };
+  helmet.position.y = 0.01; helmet.rotation.x = -0.25; P.head.add(helmet);
+  P.handL = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), M.skin);
+  P.handR = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), M.skin);
+  P.footL = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.26), M.suit);
+  P.footR = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.26), M.suit);
+  g.add(P.hips, P.head, P.handL, P.handR, P.footL, P.footR);
+  return { group: shadowy(g), P };
 }
-
-const _up = new THREE.Vector3(0, 1, 0), _t = new THREE.Vector3(), _q = new THREE.Quaternion();
-function placeSeg(mesh, a, b, r) {        // stretch a capsule between points a and b
-  _t.subVectors(b, a); const len = _t.length();
+const _t = V3();
+function placeSeg(mesh, a, b) {            // orient a fixed-length capsule between two joints
+  _t.subVectors(b, a);
   mesh.position.addVectors(a, b).multiplyScalar(0.5);
   mesh.quaternion.setFromUnitVectors(_up, _t.normalize());
 }
-function ik(root, target, l1, l2, pole) {   // two-bone IK, returns joint position
-  const d = new THREE.Vector3().subVectors(target, root);
-  const dist = THREE.MathUtils.clamp(d.length(), 0.05, l1 + l2 - 1e-3);
-  d.normalize();
-  const x = (l1 * l1 - l2 * l2 + dist * dist) / (2 * dist);
-  const h = Math.sqrt(Math.max(0, l1 * l1 - x * x));
+function ik(root, target, l1, l2, pole) {  // two-bone IK, returns the middle joint
+  const d = V3().subVectors(target, root);
+  const dist = clamp(d.length(), 0.05, l1 + l2 - 1e-3); d.normalize();
+  const x = (l1 * l1 - l2 * l2 + dist * dist) / (2 * dist), h = Math.sqrt(Math.max(0, l1 * l1 - x * x));
   const p = pole.clone().sub(d.clone().multiplyScalar(pole.dot(d))).normalize();
   return root.clone().addScaledVector(d, x).addScaledVector(p, h);
 }
 
-// ---------------------------------------------------------------- assemble
+// ================================================================ assemble
 const board = makeBoard();
-const riderObj = makeRider(); const rider = riderObj.group;
+const { group: rider, P } = makeRider();
 board.add(rider); rider.position.set(0, 0.14, -0.1);
-const wing = makeWing();
+const wingObj = makeWing(), wing = wingObj.group;
 scene.add(board, wing);
 
-// buoys + islands for a sense of speed and place
 const buoys = [];
 const buoyMat = [new THREE.MeshStandardMaterial({ color: 0xff5a2e, roughness: 0.5 }), new THREE.MeshStandardMaterial({ color: 0xffd23a, roughness: 0.5 })];
 for (let i = 0; i < 14; i++) {
   const b = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.0, 0.5, 1.6, 16), buoyMat[i % 2]);
-  body.position.y = 0.5; b.add(body);
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.3, 16), buoyMat[(i + 1) % 2]);
-  b.add(base);
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.0, 0.5, 1.6, 16), buoyMat[i % 2]); body.position.y = 0.5;
+  b.add(body, new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.3, 16), buoyMat[(i + 1) % 2]));
   b.userData.home = new THREE.Vector2((Math.random() - 0.5) * 500, (Math.random() - 0.5) * 500);
   shadowy(b); buoys.push(b); scene.add(b);
 }
 const islandMat = new THREE.MeshStandardMaterial({ color: 0x55665a, roughness: 1 });
 for (let i = 0; i < 7; i++) {
-  const geo = new THREE.SphereGeometry(1, 64, 24);
-  const p = geo.attributes.position;
+  const geo = new THREE.SphereGeometry(1, 64, 24), p = geo.attributes.position;
   for (let k = 0; k < p.count; k++) {
     const x = p.getX(k), y = p.getY(k), z = p.getZ(k);
     const n = 1 + 0.18 * Math.sin(x * 5 + i) * Math.cos(z * 4 - i) + 0.08 * Math.sin(x * 13 + z * 11);
@@ -397,45 +434,73 @@ for (let i = 0; i < 7; i++) {
   scene.add(m);
 }
 
-// ---------------------------------------------------------------- spray particles
+// ================================================================ spray
 const SPRAY_N = 1500;
 const sprayPos = new Float32Array(SPRAY_N * 3), sprayVel = new Float32Array(SPRAY_N * 3), sprayLife = new Float32Array(SPRAY_N);
 const sprayGeo = new THREE.BufferGeometry();
 sprayGeo.setAttribute('position', new THREE.BufferAttribute(sprayPos, 3));
-const sprayTex = (() => {
+const dotTex = (() => {
   const c = document.createElement('canvas'); c.width = c.height = 64;
-  const x = c.getContext('2d'); const gr = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  const x = c.getContext('2d'), gr = x.createRadialGradient(32, 32, 0, 32, 32, 32);
   gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.4, 'rgba(255,255,255,0.5)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
   x.fillStyle = gr; x.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c);
 })();
-const spray = new THREE.Points(sprayGeo, new THREE.PointsMaterial({ size: 0.09, map: sprayTex, transparent: true,
-  depthWrite: false, color: 0xe8f2f5, opacity: 0.85 }));
+const spray = new THREE.Points(sprayGeo, new THREE.PointsMaterial({ size: 0.09, map: dotTex, transparent: true, depthWrite: false, color: 0xe8f2f5, opacity: 0.85 }));
 spray.frustumCulled = false; scene.add(spray);
 let sprayHead = 0;
 function emit(p, v, jitter, n) {
   for (let i = 0; i < n; i++) {
     const k = sprayHead; sprayHead = (sprayHead + 1) % SPRAY_N;
     sprayPos[k * 3] = p.x + (Math.random() - 0.5) * 0.1; sprayPos[k * 3 + 1] = p.y; sprayPos[k * 3 + 2] = p.z + (Math.random() - 0.5) * 0.1;
-    sprayVel[k * 3] = v.x + (Math.random() - 0.5) * jitter; sprayVel[k * 3 + 1] = v.y + Math.random() * jitter;
-    sprayVel[k * 3 + 2] = v.z + (Math.random() - 0.5) * jitter;
+    sprayVel[k * 3] = v.x + (Math.random() - 0.5) * jitter; sprayVel[k * 3 + 1] = v.y + Math.random() * jitter; sprayVel[k * 3 + 2] = v.z + (Math.random() - 0.5) * jitter;
     sprayLife[k] = 0.6 + Math.random() * 0.6;
   }
 }
 function updateSpray(dt) {
   for (let k = 0; k < SPRAY_N; k++) {
     if (sprayLife[k] <= 0) { sprayPos[k * 3 + 1] = -100; continue; }
-    sprayLife[k] -= dt;
-    sprayVel[k * 3 + 1] -= 9.81 * dt;
-    sprayPos[k * 3] += sprayVel[k * 3] * dt; sprayPos[k * 3 + 1] += sprayVel[k * 3 + 1] * dt; sprayPos[k * 3 + 2] += sprayVel[k * 3 + 2] * dt;
+    sprayLife[k] -= dt; sprayVel[k * 3 + 1] -= 9.81 * dt;
+    for (let c = 0; c < 3; c++) sprayPos[k * 3 + c] += sprayVel[k * 3 + c] * dt;
   }
   sprayGeo.attributes.position.needsUpdate = true;
 }
 
-// ---------------------------------------------------------------- wake (foam ribbon behind the mast)
-const WAKE_N = 220;
-const wakePts = [];   // {x, z, age}
+// ================================================================ wind streaks (show direction + strength in the air)
+const STREAK_N = 260;
+const streaks = [];
+const stPos = new Float32Array(STREAK_N * 6), stAlpha = new Float32Array(STREAK_N * 2);
+const stGeo = new THREE.BufferGeometry();
+stGeo.setAttribute('position', new THREE.BufferAttribute(stPos, 3));
+stGeo.setAttribute('alpha', new THREE.BufferAttribute(stAlpha, 1));
+const streakMesh = new THREE.LineSegments(stGeo, new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false,
+  vertexShader: `attribute float alpha; varying float vA; void main(){ vA = alpha; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }`,
+  fragmentShader: `varying float vA; void main(){ gl_FragColor = vec4(1.0, 1.0, 1.0, vA); }`,
+}));
+streakMesh.frustumCulled = false; scene.add(streakMesh);
+function respawnStreak(s, cx, cz, anywhere) {
+  s.x = cx + (Math.random() - 0.5) * 90;
+  s.z = cz + (anywhere ? (Math.random() - 0.5) * 90 : 45);
+  s.y = 0.7 + Math.random() * 2.5; s.life = 0; s.max = 2 + Math.random() * 3;
+}
+for (let i = 0; i < STREAK_N; i++) { const s = {}; respawnStreak(s, 0, 0, true); s.life = Math.random() * s.max; streaks.push(s); }
+function updateStreaks(dt, t, cx, cz) {
+  streaks.forEach((s, i) => {
+    const wf = windFactor(s.x, s.z, t), W = WB * wf;
+    s.z -= W * dt; s.x += Math.sin(t * 0.7 + i) * 0.3 * dt; s.life += dt;
+    if (s.life > s.max || Math.abs(s.x - cx) > 45 || s.z < cz - 45 || s.z > cz + 46) respawnStreak(s, cx, cz, s.life <= s.max);
+    const len = W * 0.16;
+    stPos.set([s.x, s.y, s.z, s.x, s.y, s.z + len], i * 6);
+    const a = 0.45 * smooth(0.75, 1.3, wf) * Math.sin(Math.PI * clamp(s.life / s.max, 0, 1));
+    stAlpha[i * 2] = a; stAlpha[i * 2 + 1] = 0;
+  });
+  stGeo.attributes.position.needsUpdate = true; stGeo.attributes.alpha.needsUpdate = true;
+}
+
+// ================================================================ wake ribbon
+const WAKE_N = 220, wakePts = [];
 const wakeGeo = new THREE.BufferGeometry();
-const wakePos = new Float32Array(WAKE_N * 2 * 3), wakeAlpha = new Float32Array(WAKE_N * 2);
+const wakePos = new Float32Array(WAKE_N * 6), wakeAlpha = new Float32Array(WAKE_N * 2);
 wakeGeo.setAttribute('position', new THREE.BufferAttribute(wakePos, 3));
 wakeGeo.setAttribute('alpha', new THREE.BufferAttribute(wakeAlpha, 1));
 { const idx = []; for (let i = 0; i < WAKE_N - 1; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); } wakeGeo.setIndex(idx); }
@@ -450,42 +515,86 @@ const wake = new THREE.Mesh(wakeGeo, new THREE.ShaderMaterial({
     }`,
 }));
 wake.frustumCulled = false; scene.add(wake);
+function updateWake(dt, t) {
+  for (const p of wakePts) p.age += dt;
+  const n = wakePts.length;
+  for (let i = 0; i < WAKE_N; i++) {
+    if (!n) { wakeAlpha[i * 2] = wakeAlpha[i * 2 + 1] = 0; continue; }
+    const p = wakePts[Math.min(i, n - 1)], q = wakePts[Math.min(i + 1, n - 1)], pr = wakePts[Math.min(Math.max(0, i - 1), n - 1)];
+    let dx = q.x - pr.x, dz = q.z - pr.z; const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+    const w = p.w + p.age * 0.12, y = waveHeight(p.x, p.z, t) + 0.03;
+    wakePos.set([p.x - dz * w, y, p.z + dx * w, p.x + dz * w, y, p.z - dx * w], i * 6);
+    wakeAlpha[i * 2] = wakeAlpha[i * 2 + 1] = i < n ? Math.max(0, 1 - p.age / 9) * smooth(0, 6, i) : 0;
+  }
+  wakeGeo.attributes.position.needsUpdate = true; wakeGeo.attributes.alpha.needsUpdate = true;
+}
 
-// ---------------------------------------------------------------- physics state
+// ================================================================ physics
+const RHO_AIR = 1.225, RHO_W = 1025, WING_AREA = 5, FOIL_AREA = 0.12, MASS = 95, G = 9.81;
+const FLY_H = 0.38;                         // ride height the foot assist aims for (hull above the water)
 const S = {
-  x: 0, z: 0, psi: Math.PI / 2, v: 0, h: 0, crash: 0, stamina: 1, pumpCD: 0, pumpAnim: 0,
-  steer: 0, power: 0.7, tack: 1, tackSmooth: 1, lean: 0, wind: 8, windFromX: 0, windFromZ: 1,
-  awaDeg: 90, twaDeg: 90, foiling: false,
+  x: 0, z: 0, psi: Math.PI / 2, v: 0, yb: -0.04, vy: 0, pitch: 0,
+  crash: 0, crashType: '', stamina: 1, steer: 0, sheet: 0.55, feet: 0, feetIn: 0,
+  side: -1, ts: -1, lean: 0, wf: 1, wind: WB, windFromX: 0, windFromZ: 1, aws: WB, awaDeg: 90, twaDeg: 90,
+  aoa: 0, wingForce: 0, foiling: false, contact: true, depth: MAST, hrel: 0, wsSmooth: 0,
+  legT: 9, wingT: 9, legAnim: 0, wingAnim: 0, pumpKick: 0, assist: true,
 };
 const keys = {};
-let autopilot = false, camMode = 0, orbitYaw = 0, orbitPitch = 0;
+let autopilot = false, camMode = 0, orbitYaw = 0, orbitPitch = 0, simT = 0, mapOn = true;
+let toastT = 0;
+function toast(msg) { const el = document.getElementById('toast'); el.textContent = msg; el.style.opacity = 1; toastT = 1.2; }
+
 addEventListener('keydown', e => {
   if (e.repeat) return;
   keys[e.code] = true;
-  if (e.code === 'KeyP') autopilot = !autopilot;
+  if (e.code === 'KeyP') { autopilot = !autopilot; toast(autopilot ? 'Autopilot on' : 'Autopilot off'); }
   if (e.code === 'KeyC') camMode = (camMode + 1) % 3;
   if (e.code === 'KeyR') toggleRecord();
-  if (e.code === 'Space') { e.preventDefault(); pump(); }
+  if (e.code === 'KeyT') { S.assist = !S.assist; toast(S.assist ? 'Foot assist ON' : 'Foot assist OFF — balance it yourself'); }
+  if (e.code === 'KeyM') { mapOn = !mapOn; document.getElementById('map').style.display = mapOn ? 'block' : 'none'; }
+  if (e.code === 'Space') { e.preventDefault(); legPump(); }
+  if (e.code === 'KeyE') wingPump();
+  if (e.code.startsWith('Arrow')) e.preventDefault();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('wheel', e => { S.sheet = clamp(S.sheet - Math.sign(e.deltaY) * 0.04, 0, 1); }, { passive: true });
 let dragging = false, lastX = 0, lastY = 0;
 addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
 addEventListener('pointerup', () => { dragging = false; });
 addEventListener('pointermove', e => {
   if (!dragging) return;
-  orbitYaw -= (e.clientX - lastX) * 0.005; orbitPitch = THREE.MathUtils.clamp(orbitPitch + (e.clientY - lastY) * 0.003, -0.3, 0.9);
+  orbitYaw -= (e.clientX - lastX) * 0.005; orbitPitch = clamp(orbitPitch + (e.clientY - lastY) * 0.003, -0.3, 0.9);
   lastX = e.clientX; lastY = e.clientY;
 });
 
-function pump() {
-  if (S.crash > 0 || S.pumpCD > 0 || S.stamina < 0.15) return;
-  S.v += S.foiling ? 0.3 : 0.55;
-  S.pumpCD = 0.45; S.pumpAnim = 0.45; S.stamina -= 0.12;
+// Pumping. Rhythm matters (spamming is weak); a leg + wing pump within 0.25 s is a combo.
+function rhythm(since) { return since < 0.3 ? 0.3 : since < 0.6 ? lerp(0.3, 1, (since - 0.3) / 0.3) : 1; }
+function legPump() {
+  if (S.crash > 0 || S.stamina < 0.08) return;
+  const combo = S.wingT < 0.25 ? 1.5 : 1;
+  const k = rhythm(S.legT) * combo;
+  S.pumpKick += (S.foiling ? 0.28 : 0.3) * k;               // forward thrust, delivered over the stroke
+  S.vy += (S.foiling ? 0.35 : 0.55) * k;                   // unweight: lifts the board / foil
+  S.legT = 0; S.legAnim = 0.45; S.stamina -= 0.06;
+  if (combo > 1 && !autopilot) toast('Pump combo!');
+}
+function wingPump() {
+  if (S.crash > 0 || S.stamina < 0.08) return;
+  const combo = S.legT < 0.25 ? 1.5 : 1;
+  const k = rhythm(S.wingT) * combo * clamp(S.wf, 0.7, 1.2);
+  S.pumpKick += 0.32 * k;
+  S.wingT = 0; S.wingAnim = 0.5; S.stamina -= 0.07;
+  if (combo > 1 && !autopilot) toast('Pump combo!');
 }
 
-const RHO = 1.225, WING_AREA = 5, MASS = 95, V_TAKEOFF = 5.0;
-const smooth = (a, b, x) => { const t = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
-function wingEfficiency(awa) {        // drive coefficient vs apparent wind angle (deg from bow)
+// wing aerodynamics: sheet (0..1) sets the angle of attack; past ~17° the wing stalls
+const sheetToAoa = sh => -4 + 32 * sh;                       // degrees
+function wingCL(aoa) {
+  if (aoa <= 0) return 0;
+  if (aoa < 16) return 1.25 * aoa / 16;
+  return Math.max(0.55, 1.25 - (aoa - 16) * 0.06);
+}
+function driveFraction(awa) {     // how much of the wing force pushes the board forward, vs apparent wind angle
   if (awa < 28) return 0;
   if (awa < 50) return smooth(28, 50, awa);
   if (awa < 120) return 1;
@@ -493,241 +602,287 @@ function wingEfficiency(awa) {        // drive coefficient vs apparent wind angl
 }
 
 function step(dt, t) {
-  // gusty wind, blowing toward -Z (comes FROM +Z)
-  S.wind = 8 + 1.6 * Math.sin(t * 0.11) + 0.9 * Math.sin(t * 0.37 + 1.3) + 0.4 * Math.sin(t * 1.1);
   const fx = Math.sin(S.psi), fz = Math.cos(S.psi);
-  const wax = 0 - fx * S.v, waz = -S.wind - fz * S.v;     // apparent wind velocity
-  const aws = Math.hypot(wax, waz);
-  S.windFromX = -wax / aws; S.windFromZ = -waz / aws;
-  S.awaDeg = THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(fx * S.windFromX + fz * S.windFromZ, -1, 1)));
-  S.twaDeg = THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(fz, -1, 1)));
-  // which side the wind comes from (+1 = from board's left / +X side in board frame)
-  const side = Math.sign((Math.cos(S.psi)) * S.windFromX + (-Math.sin(S.psi)) * S.windFromZ) || 1;
-  S.tack = side;
+  S.wf = windFactor(S.x, S.z, t) * (1 + 0.05 * Math.sin(t * 0.9));
+  S.wind = WB * S.wf;
+  const wax = -fx * S.v, waz = -S.wind - fz * S.v;           // apparent wind velocity
+  S.aws = Math.hypot(wax, waz);
+  S.windFromX = -wax / S.aws; S.windFromZ = -waz / S.aws;
+  S.awaDeg = Math.acos(clamp(fx * S.windFromX + fz * S.windFromZ, -1, 1)) / D2R;
+  S.twaDeg = Math.acos(clamp(fz, -1, 1)) / D2R;
+  // windward side with hysteresis, so dead upwind/downwind does not flicker
+  const sd = Math.cos(S.psi) * S.windFromX - Math.sin(S.psi) * S.windFromZ;   // board +X axis · wind-from
+  if (sd > 0.2) S.side = 1; else if (sd < -0.2) S.side = -1;
+  S.ts += clamp(S.side - S.ts, -1.6 * dt, 1.6 * dt);           // stance switch takes ~1.2 s
 
-  // controls
-  let steer = 0, power = 0.72;
+  // ---- controls
+  let steer = 0, feetIn = 0;
   if (autopilot) {
-    const target = (Math.floor(t / 22) % 2 ? -1 : 1) * THREE.MathUtils.degToRad(100);
-    let err = Math.atan2(Math.sin(target - S.psi), Math.cos(target - S.psi));
-    steer = THREE.MathUtils.clamp(err * 1.5 + 0.25 * Math.sin(t * 0.7), -1, 1);
-    power = S.h > 0.62 ? 0.4 : 0.85;
-    if (!S.foiling && S.crash <= 0 && Math.random() < 0.04) pump();
+    const target = (Math.floor(t / 25) % 2 ? -1 : 1) * 100 * D2R;
+    steer = clamp(Math.atan2(Math.sin(target - S.psi), Math.cos(target - S.psi)) * 1.5 + 0.25 * Math.sin(t * 0.7), -1, 1);
+    const want = S.depth < 0.25 || S.hrel > 0.7 ? 0.3 : S.wf > 1.2 ? 0.5 : 0.6;
+    S.sheet += clamp(want - S.sheet, -dt, dt);
+    if (!S.foiling && S.crash <= 0 && S.v > 0.5 && S.legT > 0.9) { wingPump(); legPump(); }
+    S.assist = true;
   } else {
     steer = (keys.KeyA || keys.ArrowLeft ? 1 : 0) - (keys.KeyD || keys.ArrowRight ? 1 : 0);
-    if (keys.KeyW || keys.ArrowUp) power = 1;
-    if (keys.KeyS || keys.ArrowDown) power = 0.2;
+    feetIn = (keys.KeyS ? 1 : 0) - (keys.KeyW ? 1 : 0);
+    if (keys.ArrowUp || keys.KeyI) S.sheet = clamp(S.sheet + dt * 0.7, 0, 1);
+    if (keys.ArrowDown || keys.KeyK) S.sheet = clamp(S.sheet - dt * 0.7, 0, 1);
   }
   S.steer += (steer - S.steer) * Math.min(1, dt * 4);
-  S.power += (power - S.power) * Math.min(1, dt * 3);
+  S.feetIn += (feetIn - S.feetIn) * Math.min(1, dt * 5);
+  S.legT += dt; S.wingT += dt;
+  S.legAnim = Math.max(0, S.legAnim - dt); S.wingAnim = Math.max(0, S.wingAnim - dt);
+  S.stamina = Math.min(1, S.stamina + dt * 0.07);
 
-  S.pumpCD = Math.max(0, S.pumpCD - dt); S.pumpAnim = Math.max(0, S.pumpAnim - dt);
-  S.stamina = Math.min(1, S.stamina + dt * 0.08);
+  // ---- surface under the board and under the front wing
+  const ws = waveHeight(S.x, S.z, t);
+  S.wsSmooth += (ws - S.wsSmooth) * Math.min(1, dt * 1.5);
+  const fwx = S.x + fx * FW_Z, fwz = S.z + fz * FW_Z;
+  const yFw = S.yb - MAST * Math.cos(S.pitch) + FW_Z * Math.sin(S.pitch);
+  S.depth = waveHeight(fwx, fwz, t) - yFw;
+  S.hrel = S.yb - S.wsSmooth;
 
   if (S.crash > 0) {
-    S.crash -= dt; S.v *= Math.exp(-dt * 2); S.h = 0; S.foiling = false;
+    S.crash -= dt; S.v *= Math.exp(-dt * 2); S.pumpKick = 0;
+    S.yb += (ws - 0.04 - S.yb) * Math.min(1, dt * 4); S.vy = 0; S.pitch *= Math.exp(-dt * 3);
+    S.foiling = false; S.contact = true; S.feet = 0;
+    if (S.crash <= 0) toast('Back on the board — pump to take off');
   } else {
-    const drive = 0.5 * RHO * WING_AREA * 1.1 * aws * aws * wingEfficiency(S.awaDeg) * S.power;
-    const drag = S.foiling ? 2.4 * S.v * S.v + 12 : 6 * S.v * S.v + 18 * S.v;
-    const turnDrag = Math.abs(S.steer) * S.v * 14;
-    S.v = Math.max(0, S.v + (drive - drag - turnDrag) / MASS * dt);
-    S.psi += S.steer * (0.35 + 0.05 * S.v) * dt;
-    // foil height: lift grows with speed; too much speed and the foil breaches
-    if (S.v > V_TAKEOFF || (S.foiling && S.v > V_TAKEOFF - 0.8)) {
-      const hT = THREE.MathUtils.clamp(0.25 + (S.v - V_TAKEOFF) * 0.11, 0.05, 1.2);
-      S.h += (hT - S.h) * Math.min(1, dt * 1.4);
-      if (!S.foiling && S.h > 0.05) S.foiling = true;
-    } else {
-      S.h += (0 - S.h) * Math.min(1, dt * 3);
-      if (S.h < 0.03) { if (S.foiling) splash(1.5); S.foiling = false; }
+    // ---- wing
+    S.aoa = sheetToAoa(S.sheet) + 14 * Math.sin(Math.PI * clamp(S.wingAnim / 0.5, 0, 1));
+    S.wingForce = 0.5 * RHO_AIR * WING_AREA * wingCL(S.aoa) * S.aws * S.aws;
+    const drive = S.wingForce * driveFraction(S.awaDeg);
+    // ---- feet -> board pitch -> foil angle of attack
+    let assist = 0;
+    if (S.assist && S.v > 3.8) {
+      // aim for ride height, but never let the front wing get shallower than ~35 cm
+      const err = Math.max(S.hrel - FLY_H, (0.35 - S.depth) * 1.5);
+      assist = clamp((-err * 2.2 - S.vy * 0.9) * clamp((7 / S.v) ** 2, 0.3, 1.5), -1, 1);   // lift ~ v², keep loop gain flat
     }
-    if (S.h > 0.88) crash();
+    S.feet = clamp(S.feetIn + assist * (S.assist ? 0.9 : 0), -1, 1);
+    const legOsc = S.legAnim > 0 ? 0.07 * Math.sin(2 * Math.PI * (1 - S.legAnim / 0.45)) : 0;
+    const pitchT = 0.03 + 0.14 * S.feet + legOsc;
+    S.pitch += (pitchT - S.pitch) * Math.min(1, dt * 5);
+    // ---- foil lift: needs speed, dies when the front wing gets close to the surface (ventilation)
+    const vent = smooth(-0.02, 0.12, S.depth);
+    const CLf = clamp(0.25 + 5 * S.pitch, -0.3, 1.1);
+    const lift = 0.5 * RHO_W * FOIL_AREA * S.v * S.v * CLf * vent;
+    // ---- hull: buoyancy spring when the board sits in the water
+    const sink = ws - 0.04 - S.yb;
+    S.contact = sink > -0.005;
+    const buoy = sink > 0 ? 40000 * sink - 900 * S.vy : 0;
+    const wasFoiling = S.foiling;
+    S.vy += ((lift * Math.cos(S.pitch) + buoy) / MASS - G - (1.2 + 3 * vent) * S.vy) * dt;
+    S.yb += S.vy * dt;
+    if (wasFoiling && S.contact && S.vy < -1.4) return crash('Nose-dive! Touched down too hard');
+    if (wasFoiling && S.depth < -0.01) return crash('Breach! The foil came out of the water');
+    S.foiling = S.yb > ws + 0.03;
+    if (wasFoiling && !S.foiling && S.contact) splash(1.2);
+    // ---- horizontal
+    const hullDrag = S.contact ? 6 * S.v * S.v + 18 * S.v : 0;
+    const foilDrag = (S.v > 0.5 ? 2.6 * S.v * S.v + 8 : 0) + 0.0006 * lift * lift / Math.max(S.v, 2) ** 2;
+    const turnDrag = Math.abs(S.steer) * S.v * 14;
+    // waves: gravity along the local slope pushes you down a swell face
+    const sl = 0.8, slope = (waveHeight(S.x + fx * sl, S.z + fz * sl, t) - waveHeight(S.x - fx * sl, S.z - fz * sl, t)) / (2 * sl);
+    const kick = S.pumpKick * Math.min(1, dt * 6); S.pumpKick -= kick;
+    S.v = Math.max(0, S.v + ((drive - hullDrag - foilDrag - turnDrag) / MASS - G * slope * 0.6) * dt + kick);
+    S.psi += S.steer * (0.35 + 0.05 * S.v) * dt;
   }
   S.x += fx * S.v * dt; S.z += fz * S.v * dt;
 }
-
-function crash() {
-  S.crash = 2.2; S.v *= 0.25; S.h = 0; S.foiling = false; splash(6);
+function crash(msg) {
+  S.crash = 2.5; S.crashType = msg.startsWith('Breach') ? 'breach' : 'dive';
+  S.v *= 0.25; S.vy = 0; S.foiling = false; S.pumpKick = 0;
+  splash(6); toast(msg);
 }
 function splash(strength) {
-  const p = new THREE.Vector3(S.x, waveHeight(S.x, S.z, simT), S.z);
-  emit(p, new THREE.Vector3(0, 1.5 * strength, 0), 1.6 * strength, Math.round(60 * strength));
+  emit(V3(S.x, waveHeight(S.x, S.z, simT), S.z), V3(0, 1.5 * strength, 0), 1.6 * strength, Math.round(60 * strength));
 }
 
-// ---------------------------------------------------------------- pose: board, rider, wing
-const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
-function pose(t) {
+// ================================================================ pose
+const wingQ = new THREE.Quaternion(), wingPos = V3();
+let crashBlend = 0;
+function pose(dt, t) {
   const fx = Math.sin(S.psi), fz = Math.cos(S.psi);
   const wh = waveHeight(S.x, S.z, t);
-  const foilF = smooth(0, 0.25, S.h);
-  // board rides the waves when in displacement; foil smooths chop when flying
-  const y = wh * (1 - 0.75 * foilF) + S.h - 0.07 * (1 - foilF);
-  board.position.set(S.x, y, S.z);
-  const sl = 0.6;   // wave slope sample for pitch/roll
-  const pitchW = (waveHeight(S.x + fx * sl, S.z + fz * sl, t) - waveHeight(S.x - fx * sl, S.z - fz * sl, t)) / (2 * sl);
-  const rollW = (waveHeight(S.x + fz * sl, S.z - fx * sl, t) - waveHeight(S.x - fz * sl, S.z + fx * sl, t)) / (2 * sl);
-  const crashRoll = S.crash > 0 ? Math.sin(Math.min(1, (2.2 - S.crash) * 2) * Math.PI / 2) * 0.5 : 0;
-  board.rotation.set(-Math.atan(pitchW) * (1 - foilF) - 0.04 * foilF, S.psi,
-    -S.steer * 0.35 * smooth(1, 6, S.v) + Math.atan(rollW) * (1 - foilF) + crashRoll, 'YXZ');
+  const inWater = S.contact || S.crash > 0;
+  const sl = 0.6;
+  const pitchW = inWater ? (waveHeight(S.x + fx * sl, S.z + fz * sl, t) - waveHeight(S.x - fx * sl, S.z - fz * sl, t)) / (2 * sl) : 0;
+  const rollW = inWater ? (waveHeight(S.x + fz * sl, S.z - fx * sl, t) - waveHeight(S.x - fz * sl, S.z + fx * sl, t)) / (2 * sl) : 0;
+  crashBlend += ((S.crash > 0 ? 1 : 0) - crashBlend) * Math.min(1, dt * 5);
+  board.position.set(S.x, S.yb, S.z);
+  board.rotation.set(-(S.pitch + Math.atan(pitchW)), S.psi, -S.steer * 0.35 * smooth(1, 6, S.v) + Math.atan(rollW) + crashBlend * 0.3, 'YXZ');
 
-  // rider faces leeward; switch smoothly after a tack/gybe
-  S.tackSmooth += (S.tack - S.tackSmooth) * Math.min(1, 1 / 60 * 3);
-  const s = S.tackSmooth;                      // +1: wind from board +X side
+  // ---- rider: faces leeward; S.ts runs -1..1 through a foot switch
+  const ts = S.ts, sgn = ts >= 0 ? 1 : -1;
   rider.rotation.order = 'YXZ';
-  rider.rotation.y = -Math.PI / 2 * s;          // chest -> leeward
-  const powerLean = THREE.MathUtils.clamp(S.power * (S.foiling ? 0.32 : 0.18), 0, 0.4);
-  S.lean += (powerLean - S.lean) * 0.05;
-  const fall = S.crash > 0 ? Math.min(1, (2.2 - S.crash) * 2.5) * 1.3 : 0;
-  rider.rotation.x = -S.lean + fall;            // lean back to windward, or fall leeward when crashing
-  rider.rotation.z = 0;
-  const crouch = Math.sin((S.pumpAnim / 0.45) * Math.PI) * 0.16 + (S.foiling ? 0.05 : 0.1);
-  const P = riderObj.parts;
-  const frontX = s > 0 ? 1 : -1;                // rider-frame X that points to the nose
-  // after the -90° yaw (s>0) rider +X maps to board +Z (nose)
-  const hip = new THREE.Vector3(0, 0.95 - crouch, -0.04);
-  const footF = new THREE.Vector3(frontX * 0.3, 0.05, 0), footB = new THREE.Vector3(-frontX * 0.28, 0.05, 0);
-  const kneePole = new THREE.Vector3(0, 0.2, 1);
-  for (const [foot, thigh, shin, fm, dx] of [[footF, P.thighL, P.shinL, P.footL, 0.09], [footB, P.thighR, P.shinR, P.footR, -0.09]]) {
-    const h0 = hip.clone().add(new THREE.Vector3(Math.sign(foot.x) * 0.09, 0, 0));
-    const knee = ik(h0, foot, 0.46, 0.46, kneePole.clone().add(new THREE.Vector3(Math.sign(foot.x) * 0.3, 0, 0)));
-    placeSeg(thigh, h0, knee, 0.075); placeSeg(shin, knee, foot, 0.06);
-    fm.position.copy(foot).add(new THREE.Vector3(0, -0.02, 0.03)); fm.rotation.y = Math.PI / 2;
-  }
-  const neck = hip.clone().add(new THREE.Vector3(0, 0.55, 0.04));
-  placeSeg(P.torso, hip.clone().add(new THREE.Vector3(0, 0.1, 0)), neck, 0.16);
+  rider.rotation.y = -Math.PI / 2 * ts;
+  const leanT = clamp(S.wingForce / (MASS * G) * 0.9, 0, 0.45) * (S.crash > 0 ? 0 : 1);
+  S.lean += (leanT - S.lean) * Math.min(1, dt * 4);
+  const fall = crashBlend * 1.35;
+  rider.rotation.x = -S.lean + (S.crashType === 'dive' ? fall : fall * 0.4);
+  rider.rotation.z = S.crashType === 'breach' ? -sgn * fall : 0;
+  rider.position.y = 0.14 - crashBlend * 0.5;
+  const legP = S.legAnim > 0 ? Math.sin(Math.PI * (1 - S.legAnim / 0.45)) : 0;
+  const wingP = S.wingAnim > 0 ? Math.sin(Math.PI * (1 - S.wingAnim / 0.5)) : 0;
+  const crouch = 0.17 * legP + (S.foiling ? 0.06 : 0.1) + 0.05 * wingP;
+  // feet: front foot = +X when ts>0; during a switch the feet slide past each other
+  const fxR = ts;
+  const shift = S.feet * 0.09 * sgn;                         // hips move toward the loaded foot
+  const hip = V3(-shift, 0.95 - crouch, -0.04);
+  const footF = V3(fxR * 0.3, 0.05, 0.02 * (1 - Math.abs(ts))), footB = V3(-fxR * 0.28, 0.05, -0.02 * (1 - Math.abs(ts)));
+  [[footF, P.thighL, P.shinL, P.footL], [footB, P.thighR, P.shinR, P.footR]].forEach(([foot, thigh, shin, fm], i) => {
+    const h0 = hip.clone().add(V3((i ? -1 : 1) * 0.09 * sgn, 0, 0));
+    const knee = ik(h0, foot, 0.46, 0.46, V3((i ? -1 : 1) * 0.3 * sgn, 0.2, 1));
+    placeSeg(thigh, h0, knee); placeSeg(shin, knee, foot);
+    fm.position.copy(foot).add(V3(0, -0.02, 0.03)); fm.rotation.y = Math.PI / 2;
+  });
+  const neck = hip.clone().add(V3(0, 0.55, 0.04));
+  placeSeg(P.torso, hip.clone().add(V3(0, 0.1, 0)), neck);
   P.hips.position.copy(hip);
-  const headP = neck.clone().add(new THREE.Vector3(0, 0.19, 0.03));
-  placeSeg(P.neck, neck, headP, 0.05);
-  P.head.position.copy(headP); P.head.rotation.y = frontX * 0.7;   // look toward the nose
+  const headP = neck.clone().add(V3(0, 0.19, 0.03));
+  placeSeg(P.neck, neck, headP);
+  P.head.position.copy(headP); P.head.rotation.y = ts * 0.7;
 
-  // ---- wing orientation from apparent wind (world)
+  // ---- wing orientation (world), driven by the apparent wind and the sheet angle
   board.updateMatrixWorld(true);
-  const leeX = -S.windFromX, leeZ = -S.windFromZ;           // apparent flow direction (horizontal)
-  const flow = new THREE.Vector3(leeX, 0, leeZ).normalize();
-  // rotate flow toward leeward by the angle of attack: sheeted in = more power
-  const aoa = THREE.MathUtils.degToRad(8 + 14 * S.power) * (S.crash > 0 ? 0 : 1);
-  const leeSide = new THREE.Vector3(-S.windFromX, 0, -S.windFromZ);
-  const fwdW = new THREE.Vector3(fx, 0, fz);
-  // perpendicular to flow, on the leeward side of the board
-  const perp = new THREE.Vector3(-flow.z, 0, flow.x); if (perp.dot(fwdW) < 0) perp.negate();
-  const teDir = flow.clone().multiplyScalar(Math.cos(aoa)).addScaledVector(perp, -Math.sin(aoa)).normalize();
-  // in light/no speed the wing just flags downwind
-  const windwardW = new THREE.Vector3(S.windFromX, 0, S.windFromZ);
-  const cant = 0.95 + 0.2 * S.power;   // span tilt from vertical toward windward
-  const span = new THREE.Vector3(0, Math.cos(cant), 0).addScaledVector(windwardW, Math.sin(cant));
-  const zAxis = teDir.clone().negate();                       // wing +Z = toward leading edge
-  span.addScaledVector(zAxis, -span.dot(zAxis)).normalize();  // orthogonalise
-  const yAxis = new THREE.Vector3().crossVectors(zAxis, span);
-  const xAxis = span;
-  const R = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
-  wing.quaternion.setFromRotationMatrix(R);
-  if (S.crash > 0) wing.quaternion.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.8, 0, 0.6)));
-  // hands hold the strut in front of the chest
-  const handMidLocal = new THREE.Vector3(0, 1.38 - crouch * 0.6, 0.5);
-  const handMid = rider.localToWorld(handMidLocal.clone());
-  const strutMid = new THREE.Vector3(0, -0.04, -0.66).applyQuaternion(wing.quaternion);
-  wing.position.copy(handMid).sub(strutMid);
+  const flow = V3(-S.windFromX, 0, -S.windFromZ).normalize();        // where the air goes
+  const aoaVis = clamp(S.aoa, -4, 30) * D2R;
+  // positive angle of attack turns the trailing edge toward the board's tail
+  const teDir = flow.clone().applyAxisAngle(_up, -ts * aoaVis);
+  const windward = V3(S.windFromX, 0, S.windFromZ);
+  const cant = 1.0 - 0.15 * wingP;                                    // span tilt from vertical, top tip to windward
+  const zAx = teDir.clone().negate();
+  const xAx = V3(0, Math.cos(cant), 0).addScaledVector(windward, Math.sin(cant));
+  xAx.addScaledVector(zAx, -xAx.dot(zAx)).normalize();
+  let yAx = V3().crossVectors(zAx, xAx);
+  if (yAx.dot(windward) < 0) { xAx.negate(); yAx.negate(); }           // strut side faces the rider / wind
+  const qRide = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAx, yAx, zAx));
+  // crashed: wing floats flat on the water, strut up
+  const zC = V3(fx, 0, fz), yC = V3(0, 1, 0), xC = V3().crossVectors(yC, zC);
+  const qCrash = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(xC, yC, zC));
+  const qT = qRide.clone().slerp(qCrash, crashBlend);
+  wingQ.slerp(qT, 1 - Math.exp(-dt * 9));
+  wing.quaternion.copy(wingQ);
+  // place the wing so its handles sit in the hands, in front of the chest (pulled in during a wing pump)
+  const handMid = rider.localToWorld(V3(0, 1.55 - crouch * 0.6, 0.45 - 0.22 * wingP));
+  const strutMid = WING.handles[0].clone().add(WING.handles[1]).multiplyScalar(0.5).applyQuaternion(wingQ);
+  const ridePos = handMid.sub(strutMid);
+  const crashPos = V3(S.x - windward.x * 1.8, wh + 0.1, S.z - windward.z * 1.8);
+  wingPos.copy(ridePos.lerp(crashPos, crashBlend));
+  wing.position.copy(wingPos);
   wing.updateMatrixWorld(true);
-  const handF = rider.worldToLocal(wing.localToWorld(new THREE.Vector3(0, -0.04, -0.38)));
-  const handB = rider.worldToLocal(wing.localToWorld(new THREE.Vector3(0, -0.04, -0.95)));
-  // which hand is nearer the nose
-  const shF = neck.clone().add(new THREE.Vector3(frontX * 0.21, -0.08, 0));
-  const shB = neck.clone().add(new THREE.Vector3(-frontX * 0.21, -0.08, 0));
-  const pairs = handF.distanceTo(shF) + handB.distanceTo(shB) < handF.distanceTo(shB) + handB.distanceTo(shF)
-    ? [[shF, handF], [shB, handB]] : [[shF, handB], [shB, handF]];
-  const arms = [[P.uArmL, P.fArmL], [P.uArmR, P.fArmR]];
-  pairs.forEach(([sh, hand], i) => {
-    const elbow = ik(sh, hand, 0.32, 0.32, new THREE.Vector3(Math.sign(sh.x) * 0.5, -1, -0.2));
-    placeSeg(arms[i][0], sh, elbow, 0.05); placeSeg(arms[i][1], elbow, hand, 0.042);
+  // canopy shape: billow grows with load, trailing edge flaps when luffing
+  const luff = 1 - smooth(2, 9, S.aoa);
+  updateCanopy(wingObj.canopy, 0.055 + 0.05 * clamp(S.wingForce / 500, 0, 1), luff * (1 - crashBlend), t);
+
+  // ---- arms: each shoulder takes the handle on its side
+  const hA = rider.worldToLocal(wing.localToWorld(WING.handles[0].clone()));
+  const hB = rider.worldToLocal(wing.localToWorld(WING.handles[1].clone()));
+  const shL = neck.clone().add(V3(0.21, -0.08, 0)), shR = neck.clone().add(V3(-0.21, -0.08, 0));
+  const [toL, toR] = hA.x > hB.x ? [hA, hB] : [hB, hA];
+  [[shL, toL, P.uArmL, P.fArmL, P.handL, 1], [shR, toR, P.uArmR, P.fArmR, P.handR, -1]].forEach(([sh, hand, ua, fa, hm, sx]) => {
+    if (crashBlend > 0.5) hand = sh.clone().add(V3(sx * 0.3, 0.3, 0.3));
+    const d = hand.clone().sub(sh); if (d.length() > 0.63) hand = sh.clone().addScaledVector(d.normalize(), 0.63);
+    const elbow = ik(sh, hand, 0.32, 0.32, V3(sx * 0.6, -1, -0.3));
+    placeSeg(ua, sh, elbow); placeSeg(fa, elbow, hand); hm.position.copy(hand);
   });
 
-  // spray + wake
-  const mastW = board.localToWorld(new THREE.Vector3(0, -S.h - 0.05, -0.18));
-  mastW.y = wh;
-  if (S.foiling && S.h < 0.8) {
-    const back = new THREE.Vector3(-fx, 0, -fz);
-    emit(mastW, back.multiplyScalar(S.v * 0.25).add(new THREE.Vector3(0, 1.2, 0)), 0.9, Math.round(S.v * 0.6));
-  } else if (S.v > 1.5 && S.crash <= 0) {
-    const nose = board.localToWorld(new THREE.Vector3(0, 0, 0.55)); nose.y = wh;
-    const side = new THREE.Vector3(fz, 0, -fx).multiplyScalar(S.v * 0.35);
-    emit(nose, side.clone().add(new THREE.Vector3(0, S.v * 0.25, 0)), 0.6, Math.round(S.v * 0.8));
-    emit(nose, side.negate().add(new THREE.Vector3(0, S.v * 0.25, 0)), 0.6, Math.round(S.v * 0.8));
+  // ---- spray + wake
+  const mastW = board.localToWorld(V3(0, 0, -0.18));
+  const whM = waveHeight(mastW.x, mastW.z, t); mastW.y = whM;
+  const mastIn = S.foiling && S.yb > whM && S.depth > 0;
+  if (mastIn) emit(mastW, V3(-fx * S.v * 0.25, 1.1, -fz * S.v * 0.25), 0.9, Math.round(S.v * 0.6));
+  if (S.foiling && S.depth < 0.12 && S.depth > 0) emit(mastW, V3(0, 2.5, 0), 1.5, 8);          // foil close to the surface: it fizzes
+  if (S.contact && S.v > 1.5 && S.crash <= 0) {
+    const nose = board.localToWorld(V3(0, 0, 0.55)); nose.y = wh;
+    const side = V3(fz, 0, -fx).multiplyScalar(S.v * 0.35);
+    for (const sd of [1, -1]) emit(nose, side.clone().multiplyScalar(sd).add(V3(0, S.v * 0.25, 0)), 0.6, Math.round(S.v * 0.8));
   }
   if (S.v > 0.8) {
     const last = wakePts[wakePts.length - 1];
-    if (!last || Math.hypot(last.x - mastW.x, last.z - mastW.z) > 0.35)
-      wakePts.push({ x: mastW.x, z: mastW.z, age: 0, w: S.foiling ? 0.08 : 0.25 });
+    if (!last || Math.hypot(last.x - mastW.x, last.z - mastW.z) > 0.35) wakePts.push({ x: mastW.x, z: mastW.z, age: 0, w: S.foiling ? 0.08 : 0.25 });
     while (wakePts.length > WAKE_N) wakePts.shift();
   }
 }
 
-function updateWake(dt, t) {
-  for (const p of wakePts) p.age += dt;
-  for (let i = 0; i < WAKE_N; i++) {
-    const p = wakePts[Math.min(i, wakePts.length - 1)];
-    if (!p) { wakeAlpha[i * 2] = wakeAlpha[i * 2 + 1] = 0; continue; }
-    const q = wakePts[Math.min(i + 1, wakePts.length - 1)] || p, pr = wakePts[Math.min(Math.max(0, i - 1), wakePts.length - 1)];
-    let dx = q.x - pr.x, dz = q.z - pr.z; const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
-    const w = p.w + p.age * 0.12;
-    const y = waveHeight(p.x, p.z, t) + 0.03;
-    wakePos.set([p.x - dz * w, y, p.z + dx * w, p.x + dz * w, y, p.z - dx * w], i * 6);
-    const a = i < wakePts.length ? Math.max(0, 1 - p.age / 9) * smooth(0, 6, i) : 0;
-    wakeAlpha[i * 2] = wakeAlpha[i * 2 + 1] = a;
-  }
-  wakeGeo.attributes.position.needsUpdate = true; wakeGeo.attributes.alpha.needsUpdate = true;
-}
-
-// ---------------------------------------------------------------- camera
-const camPos = new THREE.Vector3(-8, 3, 0), camLook = new THREE.Vector3();
+// ================================================================ camera
+const camPos = V3(-8, 3, 0), camLook = V3();
 function updateCamera(dt, t) {
   const fx = Math.sin(S.psi), fz = Math.cos(S.psi);
-  const target = new THREE.Vector3(S.x, board.position.y + 1.2, S.z);
+  const target = V3(S.x, board.position.y + 1.2, S.z);
   let want;
-  if (camMode === 0) {         // chase, slightly to windward so the wing is visible
-    // behind and to windward: see the rider's back and the wing beyond
-    const ww = new THREE.Vector3(S.windFromX, 0, S.windFromZ);
-    const off = new THREE.Vector3(-fx * 7, 0, -fz * 7).addScaledVector(ww, 3.5).applyAxisAngle(_up, orbitYaw);
-    want = new THREE.Vector3(S.x + off.x, board.position.y + 2.2 + orbitPitch * 6, S.z + off.z);
-  } else if (camMode === 1) {  // cinematic: slow orbit, low over the water
+  if (camMode === 0) {
+    const ww = V3(S.windFromX, 0, S.windFromZ);
+    const off = V3(-fx * 7, 0, -fz * 7).addScaledVector(ww, 3.5).applyAxisAngle(_up, orbitYaw);
+    want = V3(S.x + off.x, board.position.y + 2.2 + orbitPitch * 6, S.z + off.z);
+  } else if (camMode === 1) {
     const a = t * 0.12 + orbitYaw;
-    want = new THREE.Vector3(S.x + Math.sin(a) * 9 + fx * 3, board.position.y + 0.9, S.z + Math.cos(a) * 9 + fz * 3);
-  } else {                     // drone
-    want = new THREE.Vector3(S.x - fx * 14 + 8, board.position.y + 14, S.z - fz * 14 + 8);
+    want = V3(S.x + Math.sin(a) * 9 + fx * 3, board.position.y + 0.9, S.z + Math.cos(a) * 9 + fz * 3);
+  } else {
+    want = V3(S.x - fx * 14 + 8, board.position.y + 14, S.z - fz * 14 + 8);
   }
-  const k = 1 - Math.exp(-dt * 3);
-  camPos.lerp(want, k);
-  const wy = waveHeight(camPos.x, camPos.z, t);
-  if (camPos.y < wy + 0.6) camPos.y = wy + 0.6;
+  camPos.lerp(want, 1 - Math.exp(-dt * 3));
+  camPos.y = Math.max(camPos.y, waveHeight(camPos.x, camPos.z, t) + 0.6);
   camLook.lerp(target, 1 - Math.exp(-dt * 6));
   camera.position.copy(camPos); camera.lookAt(camLook);
 }
 
-// ---------------------------------------------------------------- HUD
+// ================================================================ HUD + wind map
 const $ = id => document.getElementById(id);
-function pointOfSail(twa) {
-  if (twa < 35) return 'In irons'; if (twa < 70) return 'Upwind'; if (twa < 110) return 'Beam reach';
-  if (twa < 150) return 'Broad reach'; return 'Downwind';
+const pointOfSail = twa => twa < 35 ? 'In irons' : twa < 70 ? 'Upwind' : twa < 110 ? 'Beam reach' : twa < 150 ? 'Broad reach' : 'Downwind';
+{ // sweet spot on the sheet gauge: angle of attack 11-16°
+  const a = (11 + 4) / 32, b = (16 + 4) / 32;
+  Object.assign($('gSheet').querySelector('.band').style, { left: `${a * 100}%`, width: `${(b - a) * 100}%` });
 }
 function hud() {
   $('speed').innerHTML = `${(S.v * 1.944).toFixed(1)} <small>kn</small>`;
-  $('mode').textContent = S.crash > 0 ? 'Crash!' : S.foiling ? 'Foiling' : S.v > V_TAKEOFF - 1.2 ? 'Pump to take off' : 'Displacement';
+  $('mode').textContent = S.crash > 0 ? 'Crash' : S.foiling ? 'Foiling' : S.v > 3.5 ? 'Ready — back foot / pump' : 'Displacement';
   $('pos').textContent = pointOfSail(S.twaDeg);
-  $('height').textContent = Math.round(S.h * 100);
-  $('stam').firstElementChild.style.width = `${S.stamina * 100}%`;
-  // arrow points where the wind blows, relative to camera view
+  $('height').textContent = Math.round(Math.max(0, S.yb - waveHeight(S.x, S.z, simT)) * 100);
+  $('depth').textContent = Math.round(S.depth * 100);
+  $('aoa').textContent = `${S.aoa.toFixed(0)}°${S.aoa > 17 ? ' stall' : S.aoa < 3 ? ' luffing' : ''}`;
+  $('gSheet').querySelector('.fill').style.cssText = `left:0;width:${S.sheet * 100}%;background:${S.aoa > 17 || S.aoa < 3 ? 'var(--warn)' : 'var(--fg)'}`;
+  const f = S.feet, fl = $('gFeet').querySelector('.fill');
+  fl.style.cssText = `left:${50 + Math.min(0, f) * 50}%;width:${Math.abs(f) * 50}%;background:var(--accent)`;
+  $('assist').textContent = S.assist ? 'assist on (T)' : 'assist OFF';
+  const dn = clamp(S.depth / MAST, 0, 1);
+  $('gDepth').querySelector('.fill').style.cssText = `left:0;width:${dn * 100}%;background:${S.depth < 0.15 ? 'var(--warn)' : 'var(--ok)'}`;
+  $('gStam').querySelector('.fill').style.width = `${S.stamina * 100}%`;
   const camYaw = Math.atan2(camLook.x - camPos.x, camLook.z - camPos.z);
-  const windTo = Math.PI;      // toward -Z
-  $('arrow').style.transform = `rotate(${(windTo - camYaw) * -180 / Math.PI + 180}deg)`;
-  $('windtxt').textContent = `${(S.wind * 1.944).toFixed(0)} kn`;
+  $('arrow').style.transform = `rotate(${180 - (Math.PI - camYaw) * 180 / Math.PI}deg)`;
+  $('windtxt').textContent = `${(S.wind * 1.944).toFixed(0)} kn ${S.wf > 1.12 ? 'gust' : S.wf < 0.88 ? 'lull' : ''}`;
+}
+const mapCtx = $('map').getContext('2d'), MAP_R = 400, MAP_N = 34;
+function drawMap(t) {
+  // north-up (+Z up), screen-right = -X so it matches the chase view; 800 m across
+  const c = mapCtx, W = 170, cell = W / MAP_N;
+  for (let j = 0; j < MAP_N; j++) for (let i = 0; i < MAP_N; i++) {
+    const wx = S.x - ((i + 0.5) / MAP_N * 2 - 1) * MAP_R, wz = S.z - ((j + 0.5) / MAP_N * 2 - 1) * MAP_R;
+    const kn = WB * windFactor(wx, wz, t) * 1.944;
+    const u = clamp((kn - 9) / 16, 0, 1);
+    c.fillStyle = `hsl(${200 - 190 * u},${55 + 25 * u}%,${30 + 18 * u}%)`;
+    c.fillRect(i * cell, j * cell, cell + 0.5, cell + 0.5);
+  }
+  c.strokeStyle = '#fff8'; c.lineWidth = 1;                     // wind arrows (blowing down the map)
+  for (let i = 1; i < 4; i++) for (let j = 1; j < 4; j++) {
+    const x = i * W / 4, y = j * W / 4 - 8; c.beginPath(); c.moveTo(x, y); c.lineTo(x, y + 16); c.lineTo(x - 3, y + 11); c.moveTo(x, y + 16); c.lineTo(x + 3, y + 11); c.stroke();
+  }
+  const cx = W / 2, cy = W / 2;
+  c.fillStyle = '#fff'; c.beginPath(); c.arc(cx, cy, 4, 0, Math.PI * 2); c.fill();
+  c.strokeStyle = '#fff'; c.lineWidth = 2; c.beginPath(); c.moveTo(cx, cy);
+  c.lineTo(cx - Math.sin(S.psi) * 14, cy - Math.cos(S.psi) * 14); c.stroke();
+  c.fillStyle = '#fffd'; c.font = '10px system-ui'; c.fillText('wind  9 ─ 25 kn', 6, W - 6);
 }
 
-// ---------------------------------------------------------------- recording
+// ================================================================ recording
 let recorder = null, chunks = [];
 function toggleRecord() {
   if (recorder) { recorder.stop(); return; }
-  const stream = renderer.domElement.captureStream(60);
   const mime = ['video/webm;codecs=vp9', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
-  recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16e6 });
+  recorder = new MediaRecorder(renderer.domElement.captureStream(60), { mimeType: mime, videoBitsPerSecond: 16e6 });
   chunks = [];
   recorder.ondataavailable = e => chunks.push(e.data);
   recorder.onstop = () => {
@@ -739,23 +894,28 @@ function toggleRecord() {
   recorder.start(); $('rec').style.display = 'block';
 }
 
-// ---------------------------------------------------------------- loop
+// ================================================================ loop
 const params = new URLSearchParams(location.search);
 if (params.has('auto')) autopilot = true;
 if (params.has('cam')) camMode = +params.get('cam');
-let simT = 0, last = performance.now();
-// warm start for screenshots: ?warm=N simulates N seconds before the first frame
-const warm = +params.get('warm') || 0;
-for (let i = 0; i < warm * 60; i++) { step(1 / 60, simT); pose(simT); updateSpray(1 / 60); updateCamera(1 / 60, simT); simT += 1 / 60; }
-
-function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+if (params.get('test') === 'breach') { S.assist = false; S.v = 7; keys.KeyS = true; }   // back foot, no assist -> must breach
+const tlog = [];
+function tick(dt) {
   const sub = 4;
   for (let i = 0; i < sub; i++) step(dt / sub, simT + dt * i / sub);
   simT += dt;
-  pose(simT);
-  updateSpray(dt); updateWake(dt, simT); updateCamera(dt, simT);
-  // keep the ocean grid and shadow camera centred on the rider
+  pose(dt, simT);
+  updateSpray(dt); updateWake(dt, simT); updateStreaks(dt, simT, S.x, S.z); updateCamera(dt, simT);
+  if (params.has('log') && Math.round(simT * 60) % 15 === 0)
+    tlog.push(`t=${simT.toFixed(2)} v=${S.v.toFixed(2)} yb=${S.yb.toFixed(2)} ws=${waveHeight(S.x, S.z, simT).toFixed(2)} depth=${S.depth.toFixed(2)} pitch=${S.pitch.toFixed(3)} foil=${S.foiling} crash=${S.crash > 0 ? S.crashType : '-'}`);
+}
+const warm = +params.get('warm') || 0;
+for (let i = 0; i < warm * 60; i++) tick(1 / 60);
+if (params.has('log')) console.log('LOG\n' + tlog.join('\n'));
+let last = performance.now(), mapT = 0, frameN = 0;
+function frame(now) {
+  const dt = clamp((now - last) / 1000, 0, 0.05); last = now;   // rAF time can precede performance.now()
+  tick(dt);
   ocean.position.set(Math.round(S.x / 4) * 4, 0, Math.round(S.z / 4) * 4);
   oceanMat.uniforms.uTime.value = simT;
   sunLight.position.set(S.x, 0, S.z).addScaledVector(sunDir, 50);
@@ -766,7 +926,10 @@ function frame(now) {
     b.position.set(bx, waveHeight(bx, bz, simT) - 0.1, bz);
     b.rotation.set(Math.sin(simT + bx) * 0.08, 0, Math.cos(simT * 0.8 + bz) * 0.08);
   }
+  if ((mapT -= dt) <= 0 && mapOn) { drawMap(simT); mapT = 0.4; }
+  if (toastT > 0 && (toastT -= dt) <= 0) $('toast').style.opacity = 0;
   hud();
+  if (params.has('log') && (++frameN <= 3)) console.log('FRAME ' + frameN + ' ' + JSON.stringify({x: S.x, z: S.z, yb: S.yb, psi: S.psi, q: wing.quaternion.toArray(), wp: wing.position.toArray(), cam: camera.position.toArray(), board: board.position.toArray()}));
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
