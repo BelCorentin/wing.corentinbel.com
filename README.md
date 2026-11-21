@@ -5,18 +5,19 @@ A small wingfoiling simulator in the browser: live at https://wing.corentinbel.c
 Single `index.html`, Three.js from a CDN, everything procedural (no downloaded assets): Gerstner-wave ocean with wind chop, sky, board + foil, inflatable wing or parawing, rider (capsule rig + 2-bone IK), spray, wake, wind streaks.
 
 ## Controls
-Simple (default): A/D steer · W more power · S less power · Space pump (keep a rhythm) · Q wing ⇄ parawing · C camera · P autopilot · R record .webm · Tab pro controls.
+Simple (default): A/D steer · W/S more / less power · Space pump (keep a rhythm) · J jump · Q wing ⇄ parawing · G mode · L light · C camera · P autopilot · Tab pro controls.
 Pro: W/S front/back foot · ↑/↓ or wheel wing power · Space leg pump · E wing pump (together = combo) · T foot assist · M wind map.
-Touch: autopilot first; tap to take over, hold left/right edge to steer, tap the middle to pump, two fingers = autopilot.
+Toolbar (top): mode (Free ride / Slalom race / Downwinder), time of day (Day / Golden hour / Sunset / Night), 🎨 colours, 📷 photo mode (O; drag orbit, wheel zoom, Enter/Save PNG), 🔊 sound (N), ⏺ record .webm (R).
+Touch: autopilot first; tap to take over, hold left/right edge to steer, tap the middle to pump, swipe up to jump, two fingers = autopilot.
 
-URL flags: `?inspect=wing|para&ang=deg&elev=deg` (gear alone, for modelling), `&dolphins=N` (first pod after N s), `?auto`, `&cam=0|1|2`, `&gear=para`, `&pro`, `&warm=30` (pre-simulate 30 s), `&log` (state log in the console), `?test=breach` (back foot, no assist: must breach and crash).
+URL flags: `?inspect=wing|para&ang=deg&elev=deg`, `&dolphins=N`, `&mode=slalom|downwind`, `&tod=0..3`, `&jumpAt=T`, `&photo`, `&colors`, `?auto`, `&cam=0|1|2`, `&gear=para`, `&pro`, `&warm=30`, `&log`, `?test=breach`.
 
-## Physics (toy)
-- Wind field: 15 kn base, gust patches drifting downwind + a stronger zone, same formula in JS and in the water shader (gusts = dark rough patches, whitecaps only in strong wind).
-- Wing / parawing: sheet sets the angle of attack, lift stalls past ~16° / 14°; drive depends on apparent wind angle (no-go < 28°). Pose follows the apparent wind; gear kept ≥ 40 cm above the hull and 30 cm above the water.
-- Foil: board pitch from feet (+ assist) → lift = ½ρv²S·CL; lift fades near the surface. Breach (front wing above the local water) and hard touchdown are crashes.
-- Waves: 70 m downwind swell + chop; gravity along the slope speeds you up down a swell face.
-- Wildlife: a gull flock follows the rider (two more sit on buoys); a pod of 2-4 dolphins surfaces every ~35-80 s and porpoises alongside.
-- Pumping: leg pump (thrust + unweighting) and wing pump (weaker with the parawing); rhythm-limited, stamina cost.
+## What's in it
+- Physics (toy): wind field with gust patches (same formula in JS and the water shader), wing/parawing lift with stall, foil lift from board pitch, ventilation near the surface, breach / nose-dive / hard-landing crashes, swell you can ride, rhythm-limited pumping, jumps (bigger off a swell face, wing gives hang time).
+- AI riders: Marin, Lou (parawing) and Sam run the same physics; they reach near you, race the slalom in their own lanes and jump now and then.
+- Slalom: 8 gates across the wind, timer from gate 1, best time + ghost of your best run (browser storage).
+- Downwinder: bigger swell and wind; scores distance downwind and the longest glide without pumping.
+- Sound: synthesised with WebAudio (wind, foil hiss, hull slosh, gulls, splashes, gate beeps); starts after the first key / tap.
+- Wildlife: gull flock + gulls on buoys, dolphin pods every ~35–80 s.
 
 Run locally: `python3 -m http.server 8765` in this folder, open http://localhost:8765.

@@ -32,7 +32,18 @@
   #help b { color:var(--accent); }
   #toast { position:fixed; left:50%; top:22%; transform:translateX(-50%); color:#fff; font-size:22px; font-weight:700; text-shadow:0 2px 6px #000c; opacity:0; transition:opacity .25s; pointer-events:none; text-align:center; }
   #rec { position:fixed; right:20px; bottom:16px; color:#fff; background:#d33; padding:4px 10px; border-radius:6px; font-weight:700; display:none; }
-  @media (max-width: 700px) { #map { display:none; } #hud { transform:scale(.8); transform-origin:top left; } #help { font-size:12px; } }
+  #toolbar { position:fixed; top:12px; left:50%; transform:translateX(-50%); display:flex; gap:6px; z-index:5; }
+  #toolbar button, .pbtn { background:#0009; color:var(--fg); border:1px solid #ffffff30; border-radius:8px; padding:6px 10px; font:600 13px system-ui; cursor:pointer; white-space:nowrap; }
+  #toolbar button:hover, .pbtn:hover { background:#000c; border-color:#ffffff70; }
+  #modePanel { position:fixed; top:54px; left:50%; transform:translateX(-50%); color:#fff; background:#0008; padding:6px 14px; border-radius:8px; font:600 15px system-ui; display:none; text-align:center; text-shadow:0 1px 2px #000; }
+  #modePanel .garrow { display:inline-block; color:var(--ok); margin-right:6px; }
+  #colors { position:fixed; top:56px; left:50%; transform:translateX(-50%); background:#0b1a24ee; color:#fff; padding:12px 14px; border-radius:10px; display:none; z-index:6; font-size:13px; }
+  #colors .grid { display:grid; grid-template-columns:auto auto; gap:6px 12px; align-items:center; margin-bottom:10px; }
+  #colors input { width:44px; height:26px; border:none; background:none; padding:0; }
+  #photoBar { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); display:none; gap:8px; align-items:center; color:#fff; font-size:13px; text-shadow:0 1px 2px #000; }
+  body.photo #hud, body.photo #help, body.photo #wind, body.photo #map, body.photo #toolbar, body.photo #modePanel, body.photo #toast { display:none !important; }
+  body.photo #photoBar { display:flex; }
+  @media (max-width: 700px) { #toolbar { top:auto; bottom:84px; flex-wrap:wrap; justify-content:center; width:92vw; } #modePanel { top:12px; font-size:13px; } #map { display:none; } #hud { transform:scale(.8); transform-origin:top left; } #help { font-size:12px; } }
 </style>
 </head>
 <body>
@@ -55,6 +66,14 @@
 <div id="toast"></div>
 <div id="help"></div>
 <div id="rec">● REC</div>
+<div id="toolbar">
+  <button id="bMode" title="G">Free ride</button><button id="bTod" title="L">☀ Day</button><button id="bCol" title="U">🎨 Colours</button>
+  <button id="bPhoto" title="O">📷 Photo</button><button id="bSnd" title="N">🔊</button><button id="bRec" title="R">⏺</button>
+</div>
+<div id="modePanel"></div>
+<div id="colors"><div class="grid" id="colGrid"></div>
+  <button class="pbtn" id="cRand">Random</button> <button class="pbtn" id="cReset">Reset</button> <button class="pbtn" id="cClose">Close</button></div>
+<div id="photoBar"><span>drag = orbit · wheel = zoom</span><button class="pbtn" id="pSave">Save PNG</button><button class="pbtn" id="pExit">Exit (O)</button></div>
 
 <script type="importmap">
 { "imports": {
@@ -93,8 +112,10 @@ sky.material.uniforms.sunPosition.value.copy(sunDir);
 scene.add(sky);
 // sky baked to a mipmapped cubemap: sharp reflections close by, blurred ones on rough / far water
 const cubeRT = new THREE.WebGLCubeRenderTarget(512, { type: THREE.HalfFloatType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
-new THREE.CubeCamera(1, 20000, cubeRT).update(renderer, scene);
-scene.environment = new THREE.PMREMGenerator(renderer).fromCubemap(cubeRT.texture).texture;
+const cubeCam = new THREE.CubeCamera(1, 20000, cubeRT);
+cubeCam.update(renderer, scene);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromCubemap(cubeRT.texture).texture;
 const HORIZON = new THREE.Color(0.62, 0.72, 0.80);
 scene.fog = new THREE.Fog(HORIZON, 300, 4500);
 
@@ -103,11 +124,12 @@ sunLight.castShadow = true;
 sunLight.shadow.mapSize.set(2048, 2048);
 Object.assign(sunLight.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7, near: 1, far: 120 });
 sunLight.shadow.bias = -0.0005;
-scene.add(sunLight, sunLight.target, new THREE.HemisphereLight(0xbfd8ff, 0x1a3a48, 0.5));
+const hemi = new THREE.HemisphereLight(0xbfd8ff, 0x1a3a48, 0.5);
+scene.add(sunLight, sunLight.target, hemi);
 
 // ================================================================ wind field (same formula in JS and GLSL)
 // True wind blows toward -Z (comes FROM +Z). Gust patches drift downwind; a slow band makes a stronger zone.
-const WB = 7.5;   // base wind, m/s (~15 kn)
+let WB = 7.5;   // base wind, m/s (~15 kn); the downwinder mode raises it
 function windFactor(x, z, t) {
   const qx = x, qz = z + WB * 0.9 * t;
   const g1 = Math.sin(qx * 0.011 + 1.3 * Math.sin(qz * 0.007)) * Math.sin(qz * 0.009 + 1.1 * Math.sin(qx * 0.006 + 0.5));
@@ -156,7 +178,7 @@ const oceanMat = new THREE.ShaderMaterial({
   uniforms: {
     uTime: { value: 0 }, uWB: { value: WB }, uSteep: { value: STEEP },
     uWaves: { value: WAVES.map(w => new THREE.Vector4(...w)) }, uPhase: { value: PHASES },
-    uSky: { value: cubeRT.texture }, uSun: { value: sunDir },
+    uSky: { value: cubeRT.texture }, uSun: { value: sunDir }, uLight: { value: 1 },
   },
   vertexShader: /* glsl */`
     uniform float uTime, uSteep; uniform vec4 uWaves[${NW}]; uniform float uPhase[${NW}];
@@ -178,7 +200,7 @@ const oceanMat = new THREE.ShaderMaterial({
       gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
     }`,
   fragmentShader: /* glsl */`
-    uniform float uTime; uniform samplerCube uSky; uniform vec3 uSun;
+    uniform float uTime, uLight; uniform samplerCube uSky; uniform vec3 uSun;
     varying vec3 vWorld; varying vec3 vN; varying float vCrest; varying float vH;
     ${WIND_GLSL}
     float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
@@ -224,17 +246,17 @@ const oceanMat = new THREE.ShaderMaterial({
       vec3 sunH = normalize(vec3(uSun.x, 0.0, uSun.z));
       float toward = pow(max(dot(-V, sunH), 0.0), 2.0);
       float crestLit = clamp(vH * 1.3 + 0.35 + ch.x * 2.0, 0.0, 1.3);
-      vec3 body = deep + teal * crestLit * (0.18 + 0.9 * toward) * (0.6 + 0.4 * max(N.y, 0.0));
+      vec3 body = (deep + teal * crestLit * (0.18 + 0.9 * toward) * (0.6 + 0.4 * max(N.y, 0.0))) * uLight;
       vec3 col = mix(body, refl, fres);
       float sd = max(dot(R, uSun), 0.0);
-      col += vec3(1.0, 0.93, 0.8) * (pow(sd, 1200.0) * 40.0 * (1.0 - gust * 0.5) + pow(sd, 120.0) * 0.5);
+      col += vec3(1.0, 0.93, 0.8) * (pow(sd, 1200.0) * 40.0 * (1.0 - gust * 0.5) + pow(sd, 120.0) * 0.5) * max(uLight, 0.25);
       // foam: steep crests + whitecaps only in strong wind, broken up by noise
       float fn = noised(vWorld.xz * vec2(1.2, 0.6) + vec2(0.0, uTime * 0.6)).x;
       float foam = smoothstep(0.6, 0.95, vCrest + (fn - 0.5) * 0.35) * 0.55;
       vec2 q = vWorld.xz * 0.35 + vec2(0.0, uWB * 0.2 * uTime);
       float wc = smoothstep(0.82, 0.97, noised(q).x * 0.6 + noised(q * 3.1).x * 0.4);
       foam += wc * smoothstep(1.12, 1.4, wf) * smoothstep(-0.1, 0.25, vH) * rf;
-      col = mix(col, vec3(0.86, 0.91, 0.93), clamp(foam, 0.0, 0.85));
+      col = mix(col, vec3(0.86, 0.91, 0.93) * uLight, clamp(foam, 0.0, 0.85));
       vec3 hz = textureLod(uSky, normalize(vec3(-V.x, 0.03, -V.z)), 2.0).rgb;
       col = mix(col, hz, 1.0 - exp(-dist * 0.0008));
       gl_FragColor = vec4(col, 1.0);
@@ -263,7 +285,7 @@ const shadowy = o => { o.traverse(c => { if (c.isMesh) { c.castShadow = true; c.
 
 // ================================================================ board + foil (board frame: +Z nose, origin = hull bottom)
 const MAST = 0.9, FW_Z = 0.12;   // front wing sits MAST below the hull, FW_Z ahead of the board centre
-function makeBoard() {
+function makeBoard(railMat = M.rail) {
   const g = new THREE.Group();
   const L = 1.55, W = 0.62, H = 0.13;
   const s = new THREE.Shape();
@@ -277,7 +299,7 @@ function makeBoard() {
     geo.rotateX(Math.PI / 2); return geo;
   };
   const hull = new THREE.Mesh(ex(H - 0.06, 0.03), M.deck); hull.position.y = H - 0.03;
-  const stripe = new THREE.Mesh(ex(0.03, 0.031), M.rail); stripe.position.y = 0.045; stripe.scale.set(1.002, 1, 1.002);
+  const stripe = new THREE.Mesh(ex(0.03, 0.031), railMat); stripe.position.y = 0.045; stripe.scale.set(1.002, 1, 1.002);
   const pad = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.012, 0.95), M.pad); pad.position.set(0, H + 0.005, -0.12);
   g.add(hull, stripe, pad);
   const foil = new THREE.Group();
@@ -438,12 +460,12 @@ function updateCanopy(gear, billow, luff, t) {
 }
 
 // ================================================================ rider (rider frame: origin between feet, chest faces +Z, stance along X)
-function makeRider() {
+function makeRider(vestMat = M.vest) {
   const g = new THREE.Group();
   const seg = (r, len, mat) => { const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 6, 12), mat); g.add(m); return m; };
   const P = {
     thighL: seg(0.08, 0.42, M.suit), shinL: seg(0.062, 0.42, M.suit), thighR: seg(0.08, 0.42, M.suit), shinR: seg(0.062, 0.42, M.suit),
-    torso: seg(0.17, 0.32, M.vest), uArmL: seg(0.052, 0.28, M.suit), fArmL: seg(0.044, 0.28, M.skin),
+    torso: seg(0.17, 0.32, vestMat), uArmL: seg(0.052, 0.28, M.suit), fArmL: seg(0.044, 0.28, M.skin),
     uArmR: seg(0.052, 0.28, M.suit), fArmR: seg(0.044, 0.28, M.skin), neck: seg(0.055, 0.08, M.skin),
   };
   P.hips = new THREE.Mesh(new THREE.SphereGeometry(0.15, 16, 12), M.suit); P.hips.scale.set(1.25, 0.8, 0.9);
@@ -720,7 +742,7 @@ function updateDolphins(dt, t) {
     d.group.rotation.set(-Math.atan2(vy, d.speed), d.psi, 0, 'YXZ');
     d.flukes.rotation.x = 0.35 * Math.sin(t * w * 2 + d.ph);
     const up = y > waveHeight(d.x, d.z, t);
-    if (up !== d.wasUp) emit(V3(d.x, waveHeight(d.x, d.z, t), d.z), V3(0, 1.2, 0), 1.1, 25);
+    if (up !== d.wasUp) { const sp = V3(d.x, waveHeight(d.x, d.z, t), d.z); emit(sp, V3(0, 1.2, 0), 1.1, 25); sfxSplash(1.5, sp); }
     d.wasUp = up;
     d.group.visible = y > waveHeight(d.x, d.z, t) - 1.6;
     if (d.age > d.life) { scene.remove(d.group); dolphins.splice(i, 1); }
@@ -730,13 +752,53 @@ function updateDolphins(dt, t) {
 // ================================================================ physics
 const RHO_AIR = 1.225, RHO_W = 1025, FOIL_AREA = 0.12, MASS = 95, G = 9.81;
 const FLY_H = 0.38;                         // ride height the foot assist aims for (hull above the water)
-const S = {
+const makeState = (o = {}) => Object.assign({
   x: 0, z: 0, psi: Math.PI / 2, v: 0, yb: -0.04, vy: 0, pitch: 0,
   crash: 0, crashType: '', stamina: 1, steer: 0, sheet: 0.5, feet: 0, feetIn: 0,
   side: -1, ts: -1, lean: 0, wf: 1, wind: WB, windFromX: 0, windFromZ: 1, aws: WB, awaDeg: 90, twaDeg: 90,
   aoa: 0, wingForce: 0, foiling: false, contact: true, depth: MAST, hrel: 0, wsSmooth: 0,
   legT: 9, wingT: 9, legAnim: 0, wingAnim: 0, pumpKick: 0, assist: true, pro: false,
-};
+  air: false, airT: 0, airMax: 0, glide: 0,
+}, o);
+const S = makeState();
+// a rider = its physics state + its own board, body and gear. `me` is the player; AI riders share the same code.
+const me = { S, board, rider, P, gears, gear, wingQ: new THREE.Quaternion(), crashBlend: 0, player: true, name: 'You' };
+const riders = [me];
+
+// ---- AI riders: same physics, own colours; they reach back and forth near you, or race the slalom
+const noGo = 50 * D2R;                                   // headings closer than this to the wind are not sailable
+function sailable(h) { h = Math.atan2(Math.sin(h), Math.cos(h)); return Math.abs(h) < noGo ? (h >= 0 ? noGo : -noGo) : h; }
+const AI_PALETTES = [
+  { name: 'Marin', kind: 'wing', vest: 0x2b6cb0, rail: 0x2b6cb0, colors: { base: '#e8f1fb', lead: '#2b6cb0', tip: '#1a365d', accent: '#63b3ed' } },
+  { name: 'Lou',   kind: 'para', vest: 0xd6336c, rail: 0xd6336c, colors: { base: '#ff8fbf', lead: '#2d1b3d', tip: '#2d1b3d', accent: '#ffd43b' } },
+  { name: 'Sam',   kind: 'wing', vest: 0xf2b705, rail: 0x333333, colors: { base: '#fff4cc', lead: '#f2b705', tip: '#333333', accent: '#e8590c' } },
+];
+function makeAI(pal, i) {
+  const b = makeBoard(new THREE.MeshStandardMaterial({ color: pal.rail, roughness: 0.4 }));
+  const { group: rd, P: rp } = makeRider(new THREE.MeshStandardMaterial({ color: pal.vest, roughness: 0.55 }));
+  b.add(rd); rd.position.set(0, 0.14, -0.1);
+  const g = makeGear({ ...GEAR[pal.kind], colors: pal.colors }); g.group.visible = true; addSamples(g);
+  scene.add(b, g.group);
+  const offs = [[-30, 18], [26, -14], [8, 42]][i];
+  const e = { S: makeState({ x: offs[0], z: offs[1], psi: i % 2 ? -Math.PI / 2 : Math.PI / 2, side: i % 2 ? 1 : -1, ts: i % 2 ? 1 : -1 }),
+    board: b, rider: rd, P: rp, gear: g, wingQ: new THREE.Quaternion(), crashBlend: 0, ai: true, name: pal.name,
+    phase: i * 2.1, period: 18 + i * 6, dir: i % 2 ? -1 : 1, gate: 0, finish: null };
+  e.aiTarget = t => {
+    const A = e.S;
+    if (race.active && e.gate < race.gates.length) {
+      const g = race.gates[e.gate], lane = [-3, 3, 1.5][i] / 5;       // each AI takes its own lane through the gate
+      const gx = g.c.x + (g.a.x - g.c.x) * lane, gz = g.c.z + (g.a.z - g.c.z) * lane;
+      return sailable(Math.atan2(gx - A.x, gz - A.z));
+    }
+    const dx = S.x - A.x, dz = S.z - A.z;
+    if (Math.hypot(dx, dz) > 140) return sailable(Math.atan2(dx, dz));          // come back toward the player
+    if (Math.floor(t / e.period + e.phase) % 2) e.dir = -1; else e.dir = 1;
+    return e.dir * (95 + 15 * Math.sin(t * 0.05 + e.phase)) * D2R;
+  };
+  riders.push(e);
+  return e;
+}
+AI_PALETTES.forEach(makeAI);
 const keys = {};
 const touch = { steer: 0 };
 const isTouch = matchMedia('(pointer: coarse)').matches;
@@ -748,82 +810,90 @@ function toast(msg) { $('toast').textContent = msg; $('toast').style.opacity = 1
 function setHelp() {
   $('help').innerHTML = isTouch
     ? (autopilot ? 'Autopilot. <b>Tap</b> to take over: hold the left / right edge to steer, tap the middle to pump.'
-                 : 'Hold <b>left / right</b> edge = steer · tap <b>middle</b> = pump · <b>two fingers</b> = autopilot')
+                 : 'Hold <b>left / right</b> edge = steer · tap <b>middle</b> = pump · <b>swipe up</b> = jump · <b>two fingers</b> = autopilot')
     : S.pro
-    ? '<b>A/D</b> steer · <b>W/S</b> front / back foot · <b>↑/↓</b> or <b>wheel</b> wing power<br>' +
-      '<b>Space</b> leg pump · <b>E</b> wing pump (together = combo) · <b>T</b> foot assist<br>' +
-      '<b>Q</b> wing ⇄ parawing · <b>C</b> camera · <b>M</b> map · <b>P</b> autopilot · <b>R</b> record · <b>Tab</b> simple controls'
-    : '<b>A/D</b> steer · <b>W</b> more power · <b>S</b> less power · <b>Space</b> pump (keep a rhythm)<br>' +
-      '<b>Q</b> wing ⇄ parawing · <b>C</b> camera · <b>P</b> autopilot · <b>R</b> record · <b>Tab</b> pro controls (feet, separate pumps)';
+    ? '<b>A/D</b> steer · <b>W/S</b> front / back foot · <b>↑/↓</b> or <b>wheel</b> wing power · <b>J</b> jump<br>' +
+      '<b>Space</b> leg pump · <b>E</b> wing pump (together = combo) · <b>T</b> foot assist · <b>M</b> map<br>' +
+      '<b>Q</b> wing ⇄ parawing · <b>G</b> mode · <b>L</b> light · <b>C</b> camera · <b>P</b> autopilot · <b>Tab</b> simple controls'
+    : '<b>A/D</b> steer · <b>W/S</b> more / less power · <b>Space</b> pump (keep a rhythm) · <b>J</b> jump<br>' +
+      '<b>Q</b> wing ⇄ parawing · <b>G</b> mode · <b>L</b> light · <b>C</b> camera · <b>P</b> autopilot · <b>Tab</b> pro controls';
 }
 function setGear(name) {
-  gear.group.visible = false; gear = gears[name]; gear.group.visible = true;
+  gear.group.visible = false; gear = gears[name]; gear.group.visible = true; me.gear = gear;
   $('gear').textContent = gear.cfg.name; toast(gear.cfg.name);
 }
 
 addEventListener('keydown', e => {
   if (e.repeat) return;
   keys[e.code] = true;
+  if (photo && e.code !== 'KeyO' && e.code !== 'Enter') return;
   if (e.code === 'KeyP') { autopilot = !autopilot; toast(autopilot ? 'Autopilot on' : 'Autopilot off'); setHelp(); }
   if (e.code === 'KeyC') camMode = (camMode + 1) % 3;
   if (e.code === 'KeyR') toggleRecord();
   if (e.code === 'KeyQ') setGear(gear === gears.wing ? 'para' : 'wing');
   if (e.code === 'Tab') { e.preventDefault(); S.pro = !S.pro; document.body.classList.toggle('pro', S.pro); if (!S.pro) S.assist = true; setHelp(); toast(S.pro ? 'Pro controls' : 'Simple controls'); }
   if (e.code === 'KeyM') { mapOn = !mapOn; $('map').style.display = mapOn ? 'block' : 'none'; }
-  if (e.code === 'Space') { e.preventDefault(); if (S.pro) legPump(); else pumpBoth(); }
-  if (S.pro && e.code === 'KeyE') wingPump();
+  if (e.code === 'Space') { e.preventDefault(); if (S.pro) legPump(me); else pumpBoth(me); }
+  if (S.pro && e.code === 'KeyE') wingPump(me);
   if (S.pro && e.code === 'KeyT') { S.assist = !S.assist; toast(S.assist ? 'Foot assist ON' : 'Foot assist OFF — balance it yourself'); }
   if (e.code.startsWith('Arrow')) e.preventDefault();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
-addEventListener('wheel', e => { if (S.pro) S.sheet = clamp(S.sheet - Math.sign(e.deltaY) * 0.04, 0, 1); }, { passive: true });
+addEventListener('wheel', e => { if (photo) { photoCam.dist = clamp(photoCam.dist * (e.deltaY > 0 ? 1.1 : 0.9), 1.5, 60); return; } if (S.pro) S.sheet = clamp(S.sheet - Math.sign(e.deltaY) * 0.04, 0, 1); }, { passive: true });
 let dragging = false, lastX = 0, lastY = 0;
 const activeTouches = new Set();
+let swipeY = 0;
+const onUI = e => e.target.closest && e.target.closest('#toolbar,#colors,#photoBar,#modePanel');
 addEventListener('pointerdown', e => {
+  if (onUI(e)) return;
+  if (photo) { dragging = true; lastX = e.clientX; lastY = e.clientY; return; }
   if (e.pointerType === 'touch') {
-    activeTouches.add(e.pointerId);
+    activeTouches.add(e.pointerId); swipeY = e.clientY;
     if (activeTouches.size >= 2) { autopilot = !autopilot; touch.steer = 0; setHelp(); return; }
     if (autopilot) { autopilot = false; setHelp(); toast('Your turn! Edges steer, middle pumps'); return; }
     const f = e.clientX / innerWidth;
-    if (f < 0.3) touch.steer = 1; else if (f > 0.7) touch.steer = -1; else pumpBoth();
+    if (f < 0.3) touch.steer = 1; else if (f > 0.7) touch.steer = -1; else pumpBoth(me);
     return;
   }
   dragging = true; lastX = e.clientX; lastY = e.clientY;
 });
-const endPointer = e => { activeTouches.delete(e.pointerId); touch.steer = 0; dragging = false; };
+const endPointer = e => { if (e.pointerType === 'touch' && swipeY - e.clientY > 70) jump(me); activeTouches.delete(e.pointerId); touch.steer = 0; dragging = false; };
 addEventListener('pointerup', endPointer);
 addEventListener('pointercancel', endPointer);
 addEventListener('pointermove', e => {
   if (!dragging) return;
-  orbitYaw -= (e.clientX - lastX) * 0.005; orbitPitch = clamp(orbitPitch + (e.clientY - lastY) * 0.003, -0.3, 0.9);
+  if (photo) { photoCam.yaw -= (e.clientX - lastX) * 0.006; photoCam.pitch = clamp(photoCam.pitch + (e.clientY - lastY) * 0.004, -0.15, 1.4); }
+  else { orbitYaw -= (e.clientX - lastX) * 0.005; orbitPitch = clamp(orbitPitch + (e.clientY - lastY) * 0.003, -0.3, 0.9); }
   lastX = e.clientX; lastY = e.clientY;
 });
 
 // Pumping. Rhythm matters (spamming is weak); a leg + wing pump within 0.25 s is a combo.
 function rhythm(since) { return since < 0.3 ? 0.3 : since < 0.6 ? lerp(0.3, 1, (since - 0.3) / 0.3) : 1; }
-function legPump(quiet) {
+function legPump(e = me, quiet = false) {
+  const S = e.S;
   if (S.crash > 0 || S.stamina < 0.08) return;
   const combo = S.wingT < 0.25 ? 1.5 : 1, k = rhythm(S.legT) * combo;
   S.pumpKick += (S.foiling ? 0.28 : 0.3) * k;               // forward thrust, delivered over the stroke
   S.vy += (S.foiling ? 0.35 : 0.55) * k;                   // unweight: lifts the board / foil
-  S.legT = 0; S.legAnim = 0.45; S.stamina -= 0.06;
-  if (combo > 1 && !quiet && !autopilot) toast('Pump combo!');
+  S.legT = 0; S.legAnim = 0.45; S.stamina -= 0.06; S.glide = 0;
+  if (combo > 1 && !quiet && e.player && !autopilot) toast('Pump combo!');
 }
-function wingPump() {
+function wingPump(e = me) {
+  const S = e.S, gear = e.gear;
   if (S.crash > 0 || S.stamina < 0.08) return;
   const combo = S.legT < 0.25 ? 1.5 : 1;
   const k = rhythm(S.wingT) * combo * clamp(S.wf, 0.7, 1.2) * gear.cfg.pump;
   S.pumpKick += 0.32 * k;
-  S.wingT = 0; S.wingAnim = 0.5; S.stamina -= 0.07;
-  if (combo > 1 && !autopilot) toast('Pump combo!');
+  S.wingT = 0; S.wingAnim = 0.5; S.stamina -= 0.07; S.glide = 0;
+  if (combo > 1 && e.player && !autopilot) toast('Pump combo!');
 }
-function pumpBoth() { wingPump(); legPump(true); }
+function pumpBoth(e = me) { wingPump(e); legPump(e, true); }
 
 // wing aerodynamics: sheet (0..1) sets the angle of attack; past the stall angle lift drops
 const sheetToAoa = sh => -4 + 32 * sh;                       // degrees
 const aoaToSheet = a => (a + 4) / 32;
-function wingCL(aoa) {
-  const { clMax, stall } = gear.cfg;
+function wingCL(aoa, cfg) {
+  const { clMax, stall } = cfg;
   if (aoa <= 0) return 0;
   if (aoa < stall) return clMax * aoa / stall;
   return Math.max(0.5, clMax - (aoa - stall) * 0.06);
@@ -835,7 +905,8 @@ function driveFraction(awa) {     // share of the wing force that pushes the boa
   return 1 - 0.45 * smooth(120, 180, awa);
 }
 
-function step(dt, t) {
+function step(e, dt, t) {
+  const S = e.S, gear = e.gear;
   const fx = Math.sin(S.psi), fz = Math.cos(S.psi);
   S.wf = windFactor(S.x, S.z, t) * (1 + 0.05 * Math.sin(t * 0.9));
   S.wind = WB * S.wf;
@@ -852,12 +923,13 @@ function step(dt, t) {
   // ---- controls
   let steer = 0, feetIn = 0;
   const stall = gear.cfg.stall;
-  if (autopilot) {
-    const target = (Math.floor(t / 25) % 2 ? -1 : 1) * 100 * D2R;
-    steer = clamp(Math.atan2(Math.sin(target - S.psi), Math.cos(target - S.psi)) * 1.5 + 0.25 * Math.sin(t * 0.7), -1, 1);
+  if (e.ai || autopilot) {
+    const gt = race.active && !e.ai && me.gate < race.gates.length ? race.gates[me.gate].c : null;   // autopilot races too
+    const target = e.ai ? e.aiTarget(t) : gt ? sailable(Math.atan2(gt.x - S.x, gt.z - S.z)) : (Math.floor(t / 25) % 2 ? -1 : 1) * 100 * D2R;
+    steer = clamp(Math.atan2(Math.sin(target - S.psi), Math.cos(target - S.psi)) * 1.5 + 0.25 * Math.sin(t * 0.7 + (e.phase || 0)), -1, 1);
     const want = aoaToSheet(S.depth < 0.25 || S.hrel > 0.7 ? 4 : S.wf > 1.2 ? stall - 6 : stall - 2);
     S.sheet += clamp(want - S.sheet, -dt, dt);
-    if (!S.foiling && S.crash <= 0 && S.v > 0.5 && S.legT > 0.9) pumpBoth();
+    if (!S.foiling && S.crash <= 0 && S.v > 0.5 && S.legT > 0.9) pumpBoth(e);
     S.assist = true;
   } else if (S.pro) {
     steer = (keys.KeyA || keys.ArrowLeft ? 1 : 0) - (keys.KeyD || keys.ArrowRight ? 1 : 0);
@@ -889,11 +961,11 @@ function step(dt, t) {
     S.crash -= dt; S.v *= Math.exp(-dt * 2); S.pumpKick = 0;
     S.yb += (ws - 0.04 - S.yb) * Math.min(1, dt * 4); S.vy = 0; S.pitch *= Math.exp(-dt * 3);
     S.foiling = false; S.contact = true; S.feet = 0;
-    if (S.crash <= 0) toast('Back on the board — pump to take off');
+    if (S.crash <= 0 && e.player) toast('Back on the board — pump to take off');
   } else {
     // ---- wing
     S.aoa = sheetToAoa(S.sheet) + 14 * Math.sin(Math.PI * clamp(S.wingAnim / 0.5, 0, 1));
-    S.wingForce = 0.5 * RHO_AIR * gear.cfg.area * wingCL(S.aoa) * S.aws * S.aws;
+    S.wingForce = 0.5 * RHO_AIR * gear.cfg.area * wingCL(S.aoa, gear.cfg) * S.aws * S.aws;
     const drive = S.wingForce * driveFraction(S.awaDeg);
     // ---- feet -> board pitch -> foil angle of attack
     let assist = 0;
@@ -902,9 +974,9 @@ function step(dt, t) {
       const err = Math.max(S.hrel - FLY_H, (0.35 - S.depth) * 1.5);
       assist = clamp((-err * 2.2 - S.vy * 0.9) * clamp((7 / S.v) ** 2, 0.3, 1.5), -1, 1);   // lift ~ v², keep loop gain flat
     }
-    S.feet = clamp(S.feetIn + assist * (S.assist ? 0.9 : 0), -1, 1);
+    S.feet = S.air ? 0 : clamp(S.feetIn + assist * (S.assist ? 0.9 : 0), -1, 1);       // in the air: hold the board level
     const legOsc = S.legAnim > 0 ? 0.07 * Math.sin(2 * Math.PI * (1 - S.legAnim / 0.45)) : 0;
-    S.pitch += (0.03 + 0.14 * S.feet + legOsc - S.pitch) * Math.min(1, dt * 5);
+    S.pitch += ((S.air ? 0.05 : 0.03 + 0.14 * S.feet + legOsc) - S.pitch) * Math.min(1, dt * 5);
     // ---- foil lift: needs speed, dies when the front wing gets close to the surface (ventilation)
     const vent = smooth(-0.02, 0.12, S.depth);
     const lift = 0.5 * RHO_W * FOIL_AREA * S.v * S.v * clamp(0.25 + 5 * S.pitch, -0.3, 1.1) * vent;
@@ -913,12 +985,25 @@ function step(dt, t) {
     S.contact = sink > -0.005;
     const buoy = sink > 0 ? 40000 * sink - 900 * S.vy : 0;
     const wasFoiling = S.foiling;
-    S.vy += ((lift * Math.cos(S.pitch) + buoy) / MASS - G - (1.2 + 3 * vent) * S.vy) * dt;
+    // in the air the wing gives a little hang time
+    const hang = S.air ? S.wingForce * 0.25 : 0;
+    S.vy += ((lift * Math.cos(S.pitch) + buoy + hang) / MASS - G - (S.air ? 0.15 : 1.2 + 3 * vent) * S.vy) * dt;
     S.yb += S.vy * dt;
-    if (wasFoiling && S.contact && S.vy < -1.4) return crash('Nose-dive! Touched down too hard');
-    if (wasFoiling && S.depth < -0.01) return crash('Breach! The foil came out of the water');
+    if (S.air) {
+      S.airT += dt; S.airMax = Math.max(S.airMax, S.yb - ws);
+      if (S.contact) { S.air = false; if (S.vy < -2.5) return crash(e, 'Flat landing on the board!'); S.vy *= 0.3; }
+      else if (S.vy < 0 && S.depth > 0.12) {                            // foil back in the water: landed
+        S.air = false;
+        if (S.vy < -5.2) return crash(e, 'Hard landing!');
+        S.v *= 0.92; S.vy *= 0.3; splash(e, 2);                         // legs absorb the landing
+        if (e.player) { toast(`Jump! ${S.airMax.toFixed(1)} m · ${S.airT.toFixed(1)} s`); bestJump(S.airMax, S.airT); }
+      }
+    }
+    if (wasFoiling && S.contact && S.vy < -1.4) return crash(e, 'Nose-dive! Touched down too hard');
+    if (wasFoiling && !S.air && S.depth < -0.01) return crash(e, 'Breach! The foil came out of the water');
+    S.glide = S.foiling ? S.glide + dt : 0;
     S.foiling = S.yb > ws + 0.03;
-    if (wasFoiling && !S.foiling && S.contact) splash(1.2);
+    if (wasFoiling && !S.foiling && S.contact) splash(e, 1.2);
     // ---- horizontal
     const hullDrag = S.contact ? 6 * S.v * S.v + 18 * S.v : 0;
     const foilDrag = (S.v > 0.5 ? 2.6 * S.v * S.v + 8 : 0) + 0.0006 * lift * lift / Math.max(S.v, 2) ** 2;
@@ -928,32 +1013,45 @@ function step(dt, t) {
     const kick = S.pumpKick * Math.min(1, dt * 6); S.pumpKick -= kick;
     S.v = Math.max(0, S.v + ((drive - hullDrag - foilDrag - turnDrag) / MASS - G * slope * 0.6) * dt + kick);
     S.psi += S.steer * (0.35 + 0.05 * S.v) * dt;
+    S.slope = slope;
+    if (e.ai && S.foiling && !S.air && S.v > 7.5 && Math.random() < dt * 0.03) jump(e);   // AI riders show off now and then
   }
   S.x += fx * S.v * dt; S.z += fz * S.v * dt;
 }
-function crash(msg) {
-  S.crash = 2.5; S.crashType = msg.startsWith('Breach') ? 'breach' : 'dive';
-  S.v *= 0.25; S.vy = 0; S.foiling = false; S.pumpKick = 0;
-  splash(6); toast(msg);
+// pop off the water: harder going up a swell face (it acts as a kicker)
+function jump(e = me) {
+  const S = e.S;
+  if (!S.foiling || S.air || S.crash > 0 || S.v < 5 || S.depth < 0.15) { if (e.player && !S.foiling) toast('Get foiling first, then jump'); return; }
+  S.vy += 2.4 + 0.12 * S.v + Math.max(0, S.slope || 0) * 30;
+  S.air = true; S.airT = 0; S.airMax = 0; S.legAnim = 0.45; S.glide = 0;
 }
-function splash(strength) {
-  emit(V3(S.x, waveHeight(S.x, S.z, simT), S.z), V3(0, 1.5 * strength, 0), 1.6 * strength, Math.round(60 * strength));
+function crash(e, msg) {
+  const S = e.S;
+  S.crash = 2.5; S.crashType = msg.startsWith('Breach') ? 'breach' : 'dive';
+  S.v *= 0.25; S.vy = 0; S.foiling = false; S.pumpKick = 0; S.air = false; S.glide = 0;
+  splash(e, 6); if (e.player) toast(msg);
+}
+function splash(e, strength) {
+  const S = e.S, p = V3(S.x, waveHeight(S.x, S.z, simT), S.z);
+  emit(p, V3(0, 1.5 * strength, 0), 1.6 * strength, Math.round(60 * strength));
+  sfxSplash(strength, p);
 }
 
 // ================================================================ pose
-const wingQ = new THREE.Quaternion();
-let crashBlend = 0;
-// points used to keep the gear clear of the board and the water: tips and trailing edge
-for (const g of Object.values(gears)) {
+// points used to keep the gear clear of the board, the water and the rider: tips, trailing edge, canopy
+function addSamples(g) {
   g.samples = [];
   for (const s of [-1, -0.7, -0.35, 0, 0.35, 0.7, 1]) {
     g.samples.push(g.sh.arc(s), g.sh.T(s));
     for (const u of [0.35, 0.7]) g.samples.push(g.sh.L(s).lerp(g.sh.T(s), u));
   }
 }
-const lowestPoint = (q, p) => Math.min(...gear.samples.map(s => s.clone().applyQuaternion(q).add(p).y));
+Object.values(gears).forEach(addSamples);
+const lowestPoint = (q, p, g = gear) => Math.min(...g.samples.map(s => s.clone().applyQuaternion(q).add(p).y));
 
-function pose(dt, t) {
+function pose(e, dt, t) {
+  const S = e.S, board = e.board, rider = e.rider, P = e.P, gear = e.gear, wingQ = e.wingQ;
+  let crashBlend = e.crashBlend;
   const fx = Math.sin(S.psi), fz = Math.cos(S.psi);
   const wh = waveHeight(S.x, S.z, t);
   const inWater = S.contact || S.crash > 0;
@@ -961,6 +1059,7 @@ function pose(dt, t) {
   const pitchW = inWater ? (waveHeight(S.x + fx * sl, S.z + fz * sl, t) - waveHeight(S.x - fx * sl, S.z - fz * sl, t)) / (2 * sl) : 0;
   const rollW = inWater ? (waveHeight(S.x + fz * sl, S.z - fx * sl, t) - waveHeight(S.x - fz * sl, S.z + fx * sl, t)) / (2 * sl) : 0;
   crashBlend += ((S.crash > 0 ? 1 : 0) - crashBlend) * Math.min(1, dt * 5);
+  e.crashBlend = crashBlend;
   board.position.set(S.x, S.yb, S.z);
   board.rotation.set(-(S.pitch + Math.atan(pitchW)), S.psi, -S.steer * 0.35 * smooth(1, 6, S.v) + Math.atan(rollW) + crashBlend * 0.3, 'YXZ');
 
@@ -976,7 +1075,7 @@ function pose(dt, t) {
   rider.position.y = 0.14 - crashBlend * 0.5;
   const legP = S.legAnim > 0 ? Math.sin(Math.PI * (1 - S.legAnim / 0.45)) : 0;
   const wingP = S.wingAnim > 0 ? Math.sin(Math.PI * (1 - S.wingAnim / 0.5)) : 0;
-  const crouch = 0.17 * legP + (S.foiling ? 0.06 : 0.1) + 0.05 * wingP;
+  const crouch = 0.17 * legP + (S.foiling ? 0.06 : 0.1) + 0.05 * wingP + (S.air ? 0.22 : 0);
   const fxR = ts, shift = S.feet * 0.09 * sgn;               // front foot = +X when ts > 0; hips move toward the loaded foot
   const hip = V3(-shift, 0.95 - crouch, -0.04);
   const footF = V3(fxR * 0.3, 0.05, 0.02 * (1 - Math.abs(ts))), footB = V3(-fxR * 0.28, 0.05, -0.02 * (1 - Math.abs(ts)));
@@ -1025,7 +1124,7 @@ function pose(dt, t) {
   };
   let best = null;
   for (const dc of [0, 0.12, -0.12, 0.24, -0.24, 0.36, -0.36, 0.5]) {
-    const q = qFor(cfg.cant + dc - 0.15 * wingP), pp = posFor(q), lo = lowestPoint(q, pp), gap = bodyGap(q, pp);
+    const q = qFor(cfg.cant + dc - 0.15 * wingP), pp = posFor(q), lo = lowestPoint(q, pp, gear), gap = bodyGap(q, pp);
     const score = Math.min(lo - floor, gap - 0.4);
     if (!best || score > best.score) best = { q, score };
     if (score >= 0) break;
@@ -1038,14 +1137,14 @@ function pose(dt, t) {
   g.quaternion.copy(wingQ);
   // position from the smoothed orientation; if still too low, lift it (the arms stretch)
   const ridePos = posFor(wingQ);
-  const lo = lowestPoint(wingQ, ridePos);
+  const lo = lowestPoint(wingQ, ridePos, gear);
   if (lo < floor) ridePos.y += (floor - lo) * (1 - crashBlend);
   for (let k = 0; k < 3; k++) {                      // push straight away from the nearest body point
     const gap = bodyGap(wingQ, ridePos);
     if (gap >= 0.4) break;
     ridePos.addScaledVector(near.dir, (0.42 - gap) * (1 - crashBlend));
   }
-  window.__gap = bodyGap(wingQ, ridePos);
+  if (e.player) window.__gap = bodyGap(wingQ, ridePos);
   const crashPos = V3(S.x - windward.x * 2, wh + 0.15, S.z - windward.z * 2);
   g.position.copy(ridePos.lerp(crashPos, crashBlend));
   g.updateMatrixWorld(true);
@@ -1074,12 +1173,15 @@ function pose(dt, t) {
     const side = V3(fz, 0, -fx).multiplyScalar(S.v * 0.35);
     for (const sd of [1, -1]) emit(nose, side.clone().multiplyScalar(sd).add(V3(0, S.v * 0.25, 0)), 0.6, Math.round(S.v * 0.8));
   }
-  if (S.v > 0.8) {
+  if (e.player && S.v > 0.8) {
     const last = wakePts[wakePts.length - 1];
     if (!last || Math.hypot(last.x - mastW.x, last.z - mastW.z) > 0.35) wakePts.push({ x: mastW.x, z: mastW.z, age: 0, w: S.foiling ? 0.08 : 0.25 });
     while (wakePts.length > WAKE_N) wakePts.shift();
   }
 }
+
+// ================================================================ race (slalom) state, filled by the race module below
+const race = { active: false, gates: [] };
 
 // ================================================================ camera
 const camPos = V3(-8, 3, 0), camLook = V3();
@@ -1163,6 +1265,345 @@ function toggleRecord() {
   recorder.start(); $('rec').style.display = 'block';
 }
 
+// ================================================================ local storage (best times, ghost, colours) — optional
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('wingfoil.' + k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('wingfoil.' + k, JSON.stringify(v)); } catch { /* private mode: fine */ } },
+};
+function bestJump(h, t) {
+  const b = store.get('jump', { h: 0, t: 0 });
+  if (h > b.h) { store.set('jump', { h, t }); setTimeout(() => toast(`New best jump: ${h.toFixed(1)} m!`), 1300); }
+}
+
+// ================================================================ sound (all synthesised: no audio files)
+const SND = { ctx: null, on: store.get('sound', true), gullT: 4 };
+function audioInit() {
+  if (SND.ctx) { if (SND.ctx.state === 'suspended') SND.ctx.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+  const ctx = SND.ctx = new AC();
+  const len = ctx.sampleRate * 2, buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  SND.noise = buf;
+  SND.master = ctx.createGain(); SND.master.gain.value = SND.on ? 0.8 : 0; SND.master.connect(ctx.destination);
+  const loop = (type, f, q) => {
+    const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true; src.playbackRate.value = 0.6 + Math.random() * 0.4;
+    const fl = ctx.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q;
+    const g = ctx.createGain(); g.gain.value = 0;
+    src.connect(fl).connect(g).connect(SND.master); src.start(); return { fl, g };
+  };
+  SND.wind = loop('bandpass', 400, 0.7);       // wind roar: louder and brighter with apparent wind
+  SND.hiss = loop('highpass', 2500, 0.5);      // foil / mast hiss when flying
+  SND.slosh = loop('lowpass', 400, 1);         // hull in the water
+}
+addEventListener('keydown', audioInit); addEventListener('pointerdown', audioInit);
+function audioUpdate(dt) {
+  if (!SND.ctx || photo) return;
+  const t = SND.ctx.currentTime, a = clamp((S.aws - 3) / 14, 0, 1.4);
+  SND.wind.g.gain.setTargetAtTime(0.3 * a * a, t, 0.2); SND.wind.fl.frequency.setTargetAtTime(250 + S.aws * 45, t, 0.3);
+  SND.hiss.g.gain.setTargetAtTime(S.foiling && !S.air ? 0.04 + clamp(S.v / 12, 0, 1) * 0.1 : 0, t, 0.1);
+  SND.hiss.fl.frequency.setTargetAtTime(1800 + S.v * 120, t, 0.2);
+  SND.slosh.g.gain.setTargetAtTime(S.contact ? 0.05 + clamp(S.v / 5, 0, 1) * 0.3 : 0, t, 0.15);
+  if ((SND.gullT -= dt) <= 0) {
+    SND.gullT = 5 + Math.random() * 10;
+    let dmin = 1e9; for (const g of gulls) dmin = Math.min(dmin, g.group.position.distanceTo(camera.position));
+    if (dmin < 60) gullCry(clamp(1 - dmin / 60, 0.15, 1));
+  }
+}
+function gullCry(vol) {
+  const ctx = SND.ctx, t0 = ctx.currentTime, n = 2 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < n; i++) {
+    const t = t0 + i * (0.3 + Math.random() * 0.08);
+    const o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    o.type = 'sawtooth'; f.type = 'bandpass'; f.frequency.value = 2200; f.Q.value = 4;
+    o.frequency.setValueAtTime(1300, t); o.frequency.linearRampToValueAtTime(2300, t + 0.07); o.frequency.linearRampToValueAtTime(1150, t + 0.26);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.1 * vol, t + 0.03); g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+    o.connect(f).connect(g).connect(SND.master); o.start(t); o.stop(t + 0.3);
+  }
+}
+function sfxSplash(strength, pos) {
+  if (!SND.ctx) return;
+  const d = pos ? pos.distanceTo(camera.position) : 5, vol = clamp(strength / 6, 0.12, 1) * clamp(1 - d / 80, 0, 1);
+  if (vol < 0.02) return;
+  const ctx = SND.ctx, t = ctx.currentTime, src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  src.buffer = SND.noise; f.type = 'lowpass';
+  f.frequency.setValueAtTime(4000, t); f.frequency.exponentialRampToValueAtTime(250, t + 0.7);
+  g.gain.setValueAtTime(0.6 * vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.8);
+  src.connect(f).connect(g).connect(SND.master); src.start(t, Math.random()); src.stop(t + 0.9);
+}
+function toggleSound() { SND.on = !SND.on; store.set('sound', SND.on); if (SND.master) SND.master.gain.value = SND.on ? 0.8 : 0; updateToolbar(); }
+
+// ================================================================ time of day
+const TOD = [
+  { name: 'Day', icon: '☀', elev: 16, az: 200, turb: 3.2, ray: 1.4, mie: 0.004, exp: 0.55, sun: 0xfff1dd, sunI: 2.2, hemi: 0.5, fog: [0.62, 0.72, 0.80], light: 1 },
+  { name: 'Golden hour', icon: '🌤', elev: 3.5, az: 240, turb: 8, ray: 2.6, mie: 0.007, exp: 0.62, sun: 0xffbf73, sunI: 2.0, hemi: 0.35, fog: [0.85, 0.68, 0.52], light: 0.8 },
+  { name: 'Sunset', icon: '🌅', elev: 1.2, az: 262, turb: 7, ray: 3.2, mie: 0.008, exp: 0.75, sun: 0xff9466, sunI: 1.3, hemi: 0.3, fog: [0.70, 0.50, 0.45], light: 0.55 },
+  { name: 'Night', icon: '🌙', elev: -12, az: 262, turb: 2, ray: 0.6, mie: 0.003, exp: 0.9, sun: 0xa9bcff, sunI: 0.35, hemi: 0.12, fog: [0.02, 0.03, 0.06], light: 0.12, moon: [28, 140] },
+];
+let todIdx = 0;
+const starGeo = new THREE.BufferGeometry(), starPos = [];
+for (let i = 0; i < 1800; i++) {
+  const v = new THREE.Vector3().setFromSphericalCoords(4500, Math.acos(Math.random() * 0.97), Math.random() * Math.PI * 2);
+  starPos.push(v.x, v.y, v.z);
+}
+starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
+const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 2.2, sizeAttenuation: false, fog: false, transparent: true, opacity: 0.85 }));
+const moon = new THREE.Mesh(new THREE.SphereGeometry(70, 24, 16), new THREE.MeshBasicMaterial({ color: 0xf4f1e6, fog: false }));
+stars.visible = moon.visible = false; scene.add(stars, moon);
+function setTimeOfDay(i) {
+  todIdx = i; const c = TOD[i];
+  const sun = new THREE.Vector3().setFromSphericalCoords(1, (90 - c.elev) * D2R, c.az * D2R);
+  const su = sky.material.uniforms;
+  su.sunPosition.value.copy(sun); su.turbidity.value = c.turb; su.rayleigh.value = c.ray; su.mieCoefficient.value = c.mie;
+  // the light that casts shadows and makes the glints: the sun by day, the moon at night
+  sunDir.copy(c.moon ? new THREE.Vector3().setFromSphericalCoords(1, (90 - c.moon[0]) * D2R, c.moon[1] * D2R) : sun);
+  moon.position.copy(sunDir).multiplyScalar(4300); stars.visible = moon.visible = !!c.moon;
+  renderer.toneMappingExposure = c.exp;
+  sunLight.color.set(c.sun); sunLight.intensity = c.sunI; hemi.intensity = c.hemi;
+  HORIZON.setRGB(...c.fog); scene.fog.color.copy(HORIZON);
+  oceanMat.uniforms.uLight.value = c.light;
+  // re-bake the sky cubemap with only the sky, stars and moon visible
+  const vis = scene.children.map(o => o.visible);
+  scene.children.forEach(o => { o.visible = o === sky || (o === stars || o === moon) && !!c.moon; });
+  cubeCam.position.set(0, 0, 0); cubeCam.update(renderer, scene);
+  scene.children.forEach((o, k) => { o.visible = vis[k]; });
+  const old = scene.environment; scene.environment = pmrem.fromCubemap(cubeRT.texture).texture; old?.dispose();
+  updateToolbar();
+}
+
+// ================================================================ modes: free ride, slalom race, downwinder
+let mode = 'free';
+const MODES = { free: 'Free ride', slalom: 'Slalom race', downwind: 'Downwinder' };
+const swellBase = WAVES.map(w => w[2]);
+function setSwell(k) {
+  [0, 1].forEach(i => { WAVES[i][2] = swellBase[i] * (i ? 1 + (k - 1) * 0.6 : k); oceanMat.uniforms.uWaves.value[i].z = WAVES[i][2]; });
+}
+const dw = { x0: 0, z0: 0 };
+function setMode(m) {
+  if (mode === 'slalom') endRace();
+  if (mode === 'downwind') { setSwell(1); WB = 7.5; oceanMat.uniforms.uWB.value = WB; }
+  mode = m;
+  if (m === 'slalom') startRace();
+  if (m === 'downwind') {
+    setSwell(2.2); WB = 8.5; oceanMat.uniforms.uWB.value = WB;
+    dw.x0 = S.x; dw.z0 = S.z;
+    toast('Downwinder: head downwind, ride the swell, pump as little as you can');
+  }
+  if (m === 'free') toast('Free ride');
+  $('modePanel').style.display = m === 'free' ? 'none' : 'block';
+  updateToolbar();
+}
+
+// ---- slalom: 8 gates (pairs of buoys) zig-zagging across the wind, timer, best time + ghost of your best run
+const gateMat = { next: new THREE.MeshStandardMaterial({ color: 0x3ad17a, roughness: 0.5, emissive: 0x0b3d1f }),
+                  todo: new THREE.MeshStandardMaterial({ color: 0xff7a2e, roughness: 0.5 }),
+                  done: new THREE.MeshStandardMaterial({ color: 0x8a939b, roughness: 0.6 }) };
+function makeGateBuoy() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.6, 2.2, 16), gateMat.todo); body.position.y = 0.8;
+  const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.45), gateMat.todo); flag.position.set(0.35, 2.1, 0); flag.material = gateMat.todo;
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.8, 6), M.carbon); pole.position.y = 2.1;
+  g.add(body, flag, pole); g.userData.parts = [body, flag];
+  g.traverse(c => { if (c.isMesh) c.castShadow = true; });
+  return g;
+}
+function startRace() {
+  const dir = Math.sin(S.psi) >= 0 ? 1 : -1;               // the course runs along ±X: a beam reach either way
+  const gates = [];
+  let prev = V3(S.x, 0, S.z);
+  for (let i = 0; i < 8; i++) {
+    const c = V3(S.x + dir * (35 + i * 70), 0, S.z + (i === 0 ? 0 : i % 2 ? 10 : -10));
+    const along = c.clone().sub(prev).setY(0).normalize(), perp = V3(-along.z, 0, along.x);
+    const a = c.clone().addScaledVector(perp, 5), b = c.clone().addScaledVector(perp, -5);
+    const ma = makeGateBuoy(), mb = makeGateBuoy(); scene.add(ma, mb);
+    gates.push({ c, a, b, meshes: [ma, mb] }); prev = c;
+  }
+  Object.assign(race, { active: true, done: false, gates, start: V3(S.x, 0, S.z), dir, t0: null, time: 0, rec: [], recT: 0,
+                        best: store.get('best', null), ghost: store.get('ghost', null), results: [] });
+  me.gate = 0;
+  // the AI riders line up next to you for a rolling start
+  riders.filter(r => r.ai).forEach((r, k) => {
+    const off = (k + 1) * (k % 2 ? 7 : -7);
+    Object.assign(r.S, { x: S.x + Math.cos(S.psi) * off, z: S.z - Math.sin(S.psi) * off - 6, psi: S.psi, v: S.v, yb: S.yb, vy: 0,
+                         pitch: S.pitch, foiling: S.foiling, contact: S.contact, crash: 0, side: S.side, ts: S.ts, air: false });
+    r.gate = 0; r.t0 = null; r.finish = null;
+  });
+  buildGhost();
+  toast('Slalom: pass between the green buoys. Timer starts at gate 1');
+}
+function endRace() {
+  for (const g of race.gates) g.meshes.forEach(m => scene.remove(m));
+  if (race.ghostObj) { scene.remove(race.ghostObj.board, race.ghostObj.wing); race.ghostObj = null; }
+  Object.assign(race, { active: false, gates: [] });
+}
+// segment p->q crosses segment a->b ?
+function crosses(px, pz, qx, qz, a, b) {
+  const d = (x1, z1, x2, z2, x3, z3) => (x2 - x1) * (z3 - z1) - (z2 - z1) * (x3 - x1);
+  const d1 = d(a.x, a.z, b.x, b.z, px, pz), d2 = d(a.x, a.z, b.x, b.z, qx, qz);
+  const d3 = d(px, pz, qx, qz, a.x, a.z), d4 = d(px, pz, qx, qz, b.x, b.z);
+  return d1 * d2 < 0 && d3 * d4 < 0;
+}
+const fmtT = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
+function raceUpdate(dt) {
+  if (!race.active) return;
+  for (const r of riders) {
+    const A = r.S;
+    if (r.px !== undefined && r.gate < race.gates.length && crosses(r.px, r.pz, A.x, A.z, race.gates[r.gate].a, race.gates[r.gate].b)) {
+      if (r.gate === 0) r.t0 = simT;
+      r.gate++;
+      if (r.gate === race.gates.length) {
+        r.finish = simT - r.t0;
+        race.results.push({ name: r.name, t: r.finish });
+        if (r.player) finishRace();
+      } else if (r.player && r.gate > 1) sfxGate();
+    }
+    r.px = A.x; r.pz = A.z;
+  }
+  if (me.t0 != null && !race.done) {
+    race.time = simT - me.t0;
+    if ((race.recT -= dt) <= 0) { race.recT = 0.1; race.rec.push([S.x - race.start.x, S.z - race.start.z, S.psi, S.yb, S.pitch].map(v => +v.toFixed(3))); }
+  }
+  race.gates.forEach((g, i) => g.meshes.forEach(m => m.userData.parts.forEach(pt => { pt.material = i < me.gate ? gateMat.done : i === me.gate ? gateMat.next : gateMat.todo; })));
+  for (const g of race.gates) for (const [m, pp] of [[g.meshes[0], g.a], [g.meshes[1], g.b]]) m.position.set(pp.x, waveHeight(pp.x, pp.z, simT) - 0.15, pp.z);
+  ghostUpdate();
+}
+function sfxGate() {
+  if (!SND.ctx) return;
+  const ctx = SND.ctx, t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = 'triangle'; o.frequency.setValueAtTime(880, t); o.frequency.setValueAtTime(1320, t + 0.08);
+  g.gain.setValueAtTime(0.15, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+  o.connect(g).connect(SND.master); o.start(t); o.stop(t + 0.32);
+}
+function finishRace() {
+  race.done = true;
+  const t = race.time, isBest = !race.best || t < race.best;
+  if (isBest) { store.set('best', t); store.set('ghost', { t, dir: race.dir, pts: race.rec }); race.best = t; }
+  const others = race.results.filter(r => r.name !== 'You').map(r => `${r.name} ${fmtT(r.t)}`).join(' · ');
+  toast(`Finish! ${fmtT(t)}${isBest ? ' — new best!' : ''}`);
+  race.summary = `Finished ${fmtT(t)}${isBest ? ' (best!)' : ''}${others ? ' · ' + others : ''} — G for next mode, or <a href="#" id="again" style="color:#5fd3b5">race again</a>`;
+  sfxGate();
+}
+function buildGhost() {
+  if (!race.ghost) return;
+  const ghostify = o => { o.traverse(c => { if (c.isMesh) { c.material = c.material.clone(); c.material.transparent = true; c.material.opacity = 0.3; c.material.depthWrite = false; c.castShadow = false; } }); return o; };
+  race.ghostObj = { board: ghostify(board.clone(true)), wing: ghostify(gears.wing.group.clone(true)) };
+  race.ghostObj.wing.visible = true;
+  scene.add(race.ghostObj.board, race.ghostObj.wing);
+}
+const _gm = new THREE.Matrix4();
+function ghostUpdate() {
+  const go = race.ghostObj; if (!go) return;
+  const pts = race.ghost.pts, k = me.t0 == null ? 0 : (simT - me.t0) / 0.1, i = Math.min(Math.floor(k), pts.length - 1);
+  const a = pts[i], b = pts[Math.min(i + 1, pts.length - 1)], f = clamp(k - i, 0, 1);
+  const mx = race.ghost.dir === race.dir ? 1 : -1;     // mirror if the course runs the other way
+  const x = race.start.x + mx * lerp(a[0], b[0], f), z = race.start.z + lerp(a[1], b[1], f);
+  go.board.position.set(x, lerp(a[3], b[3], f), z);
+  go.board.rotation.set(-lerp(a[4], b[4], f), mx > 0 ? a[2] : -a[2], 0, 'YXZ');
+  // the ghost wing keeps the same offset from its board as your wing has from yours
+  board.updateMatrixWorld(); gear.group.updateMatrixWorld(); go.board.updateMatrixWorld();
+  _gm.copy(board.matrixWorld).invert().premultiply(go.board.matrixWorld).multiply(gear.group.matrixWorld);
+  _gm.decompose(go.wing.position, go.wing.quaternion, go.wing.scale);
+}
+function modePanelUpdate() {
+  if (mode === 'slalom' && race.active) {
+    if (race.done) { if ($('modePanel').dataset.s !== race.summary) { $('modePanel').innerHTML = race.summary; $('modePanel').dataset.s = race.summary; const a = $('again'); if (a) a.onclick = ev => { ev.preventDefault(); endRace(); startRace(); }; } return; }
+    const g = race.gates[me.gate], dx = g.c.x - S.x, dz = g.c.z - S.z;
+    const camYaw = Math.atan2(camLook.x - camPos.x, camLook.z - camPos.z), rel = Math.atan2(dx, dz) - camYaw;
+    $('modePanel').dataset.s = '';
+    $('modePanel').innerHTML = `<span class="garrow" style="transform:rotate(${-rel * 180 / Math.PI - 90}deg)">➤</span>` +
+      `Gate ${me.gate + 1}/${race.gates.length} · ${Math.round(Math.hypot(dx, dz))} m · ${fmtT(race.time)}` + (race.best ? ` · best ${fmtT(race.best)}` : '') + (race.ghostObj ? ' · 👻' : '');
+  } else if (mode === 'downwind') {
+    const dist = -(S.z - dw.z0), bestG = store.get('glide', 0);
+    if (S.glide > bestG + 0.5 && S.glide > 5) store.set('glide', S.glide);
+    $('modePanel').innerHTML = `Downwinder · ${Math.max(0, Math.round(dist))} m downwind · glide (no pump) ${S.glide.toFixed(1)} s · best ${Math.max(bestG, S.glide).toFixed(1)} s`;
+  }
+}
+
+// ================================================================ photo mode: freeze, orbit, save a PNG
+let photo = false;
+const photoCam = { yaw: 0, pitch: 0.25, dist: 7 };
+function togglePhoto() {
+  photo = !photo; document.body.classList.toggle('photo', photo);
+  if (photo) {
+    const d = V3().subVectors(camera.position, board.position);
+    photoCam.dist = clamp(d.length(), 3, 40); photoCam.yaw = Math.atan2(d.x, d.z); photoCam.pitch = clamp(Math.asin(d.y / d.length()), -0.1, 1.3);
+    if (SND.master) SND.master.gain.value = 0;
+  } else if (SND.master) SND.master.gain.value = SND.on ? 0.8 : 0;
+}
+function photoCamera() {
+  const tgt = V3(S.x, board.position.y + 1.1, S.z), c = Math.cos(photoCam.pitch);
+  camera.position.set(tgt.x + Math.sin(photoCam.yaw) * c * photoCam.dist, tgt.y + Math.sin(photoCam.pitch) * photoCam.dist, tgt.z + Math.cos(photoCam.yaw) * c * photoCam.dist);
+  camera.position.y = Math.max(camera.position.y, waveHeight(camera.position.x, camera.position.z, simT) + 0.15);
+  camera.lookAt(tgt);
+}
+function savePhoto() {
+  renderer.render(scene, camera);
+  const a = document.createElement('a'); a.href = renderer.domElement.toDataURL('image/png'); a.download = `wingfoil-${Date.now()}.png`; a.click();
+}
+
+// ================================================================ your colours
+const COLOR_KEYS = [
+  ['Wing body', () => GEAR.wing.colors, 'base'], ['Wing leading panel', () => GEAR.wing.colors, 'lead'],
+  ['Wing tips', () => GEAR.wing.colors, 'tip'], ['Wing accent', () => GEAR.wing.colors, 'accent'],
+  ['Parawing body', () => GEAR.para.colors, 'base'], ['Parawing edges', () => GEAR.para.colors, 'lead'], ['Parawing stripe', () => GEAR.para.colors, 'accent'],
+  ['Vest', null, 'vest'], ['Board rail', null, 'rail'],
+];
+const DEFAULT_COLORS = JSON.parse(JSON.stringify({ wing: GEAR.wing.colors, para: GEAR.para.colors, vest: '#ff7a59', rail: '#1d6f7a' }));
+function getColors() { return { wing: { ...GEAR.wing.colors }, para: { ...GEAR.para.colors }, vest: '#' + M.vest.color.getHexString(), rail: '#' + M.rail.color.getHexString() }; }
+function applyColors(c) {
+  Object.assign(GEAR.wing.colors, c.wing); Object.assign(GEAR.para.colors, c.para);
+  M.vest.color.set(c.vest); M.rail.color.set(c.rail);
+  for (const g of Object.values(gears)) { const m = g.canopy.material; m.map?.dispose(); m.map = canopyTexture(g.cfg); m.needsUpdate = true; }
+  store.set('colors', c); buildColorPanel();
+}
+function buildColorPanel() {
+  const c = getColors(), grid = $('colGrid'); grid.innerHTML = '';
+  for (const [label, obj, key] of COLOR_KEYS) {
+    const val = obj ? obj()[key] : c[key];
+    const lab = document.createElement('label'); lab.textContent = label;
+    const inp = document.createElement('input'); inp.type = 'color'; inp.value = val;
+    inp.oninput = () => {
+      const n = getColors();
+      if (obj) (obj() === GEAR.wing.colors ? n.wing : n.para)[key] = inp.value; else n[key] = inp.value;
+      applyColors(n);
+    };
+    grid.append(lab, inp);
+  }
+}
+function randomColors() {
+  const h = Math.random() * 360, hsl = (hh, s, l) => '#' + new THREE.Color().setHSL(((hh % 360) + 360) % 360 / 360, s, l).getHexString();
+  applyColors({ wing: { base: hsl(h, 0.35, 0.92), lead: hsl(h, 0.8, 0.55), tip: hsl(h + 180, 0.6, 0.38), accent: hsl(h + 30, 0.85, 0.6) },
+                para: { base: hsl(h + 60, 0.8, 0.7), lead: hsl(h + 240, 0.6, 0.25), tip: hsl(h + 240, 0.6, 0.25), accent: hsl(h, 0.85, 0.6) },
+                vest: hsl(h + 15, 0.8, 0.58), rail: hsl(h + 180, 0.6, 0.35) });
+}
+$('cRand').onclick = randomColors; $('cReset').onclick = () => applyColors(JSON.parse(JSON.stringify(DEFAULT_COLORS)));
+$('cClose').onclick = () => { $('colors').style.display = 'none'; };
+const savedColors = store.get('colors', null);
+if (savedColors) applyColors(savedColors); else buildColorPanel();
+
+// ================================================================ toolbar + shortcuts
+function updateToolbar() {
+  $('bMode').textContent = MODES[mode] + ' ▾';
+  $('bTod').textContent = `${TOD[todIdx].icon} ${TOD[todIdx].name}`;
+  $('bSnd').textContent = SND.on ? '🔊' : '🔇';
+}
+const cycleMode = () => setMode({ free: 'slalom', slalom: 'downwind', downwind: 'free' }[mode]);
+const cycleTod = () => setTimeOfDay((todIdx + 1) % TOD.length);
+const toggleColors = () => { $('colors').style.display = $('colors').style.display === 'block' ? 'none' : 'block'; };
+$('bMode').onclick = cycleMode; $('bTod').onclick = cycleTod; $('bCol').onclick = toggleColors;
+$('bPhoto').onclick = togglePhoto; $('bSnd').onclick = toggleSound; $('bRec').onclick = () => toggleRecord();
+$('pSave').onclick = savePhoto; $('pExit').onclick = togglePhoto;
+addEventListener('keydown', e => {
+  if (e.repeat || e.target.tagName === 'INPUT') return;
+  if (e.code === 'KeyO') togglePhoto();
+  if (photo) { if (e.code === 'Enter') savePhoto(); return; }
+  if (e.code === 'KeyG') cycleMode();
+  if (e.code === 'KeyL') cycleTod();
+  if (e.code === 'KeyU') toggleColors();
+  if (e.code === 'KeyN') toggleSound();
+  if (e.code === 'KeyJ') jump(me);
+});
+updateToolbar();
+
 // ================================================================ loop
 const params = new URLSearchParams(location.search);
 if (params.has('auto')) autopilot = true;
@@ -1189,24 +1630,30 @@ function tick(dt) {
     return;
   }
   const sub = 4;
-  for (let i = 0; i < sub; i++) step(dt / sub, simT + dt * i / sub);
+  for (const r of riders) for (let i = 0; i < sub; i++) step(r, dt / sub, simT + dt * i / sub);
   simT += dt;
-  pose(dt, simT);
+  for (const r of riders) pose(r, dt, simT);
+  raceUpdate(dt);
   updateSpray(dt); updateWake(dt, simT); updateStreaks(dt, simT, S.x, S.z); updateGulls(dt, simT); updateDolphins(dt, simT); updateCamera(dt, simT);
   if (params.has('log')) {
-    if (S.crash <= 0 && crashBlend < 0.01) { minClear = Math.min(minClear, lowestPoint(gear.group.quaternion, gear.group.position) - S.yb); minHead = Math.min(minHead, window.__gap ?? 9); nFr++; if ((window.__gap ?? 9) < 0.3) nClose++; }
+    if (S.crash <= 0 && me.crashBlend < 0.01) { minClear = Math.min(minClear, lowestPoint(gear.group.quaternion, gear.group.position) - S.yb); minHead = Math.min(minHead, window.__gap ?? 9); nFr++; if ((window.__gap ?? 9) < 0.3) nClose++; }
     if (Math.round(simT * 60) % 15 === 0)
-      tlog.push(`t=${simT.toFixed(2)} v=${S.v.toFixed(2)} yb=${S.yb.toFixed(2)} depth=${S.depth.toFixed(2)} foil=${S.foiling} crash=${S.crash > 0 ? S.crashType : '-'}`);
+      tlog.push(`t=${simT.toFixed(2)} v=${S.v.toFixed(2)} yb=${S.yb.toFixed(2)} depth=${S.depth.toFixed(2)} foil=${S.foiling} air=${S.air} crash=${S.crash > 0 ? S.crashType : '-'} gate=${me.gate ?? '-'} rt=${race.time?.toFixed?.(1)} res=${(race.results || []).map(r => r.name + ':' + r.t.toFixed(1)).join('/')} ai=${riders.slice(1).map(r => r.S.v.toFixed(1) + (r.S.foiling ? 'F' : '') + (r.S.crash > 0 ? 'X' : '') + '@' + Math.hypot(r.S.x - S.x, r.S.z - S.z).toFixed(0)).join(',')}`);
   }
 }
 if (params.has('dolphins')) podTimer = +params.get('dolphins');
-const warm = +params.get('warm') || 0;
-for (let i = 0; i < warm * 60; i++) tick(1 / 60);
+if (params.has('tod')) setTimeOfDay(+params.get('tod'));
+if (params.has('mode')) setMode(params.get('mode'));
+const warm = +params.get('warm') || 0, jumpAt = +params.get('jumpAt') || -1;
+for (let i = 0; i < warm * 60; i++) { tick(1 / 60); if (jumpAt > 0 && Math.abs(simT - jumpAt) < 0.009) jump(me); }
+if (params.has('photo')) togglePhoto();
+if (params.has('colors')) toggleColors();
 if (params.has('log')) console.log('LOG minClearAboveHull=' + minClear.toFixed(2) + ' minGapToBody=' + minHead.toFixed(2) + ' framesUnder30cm=' + nClose + '/' + nFr + '\n' + tlog.join('\n'));
 let last = performance.now(), mapT = 0;
 function frame(now) {
   const dt = clamp((now - last) / 1000, 0, 0.05); last = now;   // rAF time can precede performance.now()
-  tick(dt);
+  if (photo) photoCamera(); else tick(dt);
+  audioUpdate(dt); modePanelUpdate();
   ocean.position.set(Math.round(S.x / 4) * 4, 0, Math.round(S.z / 4) * 4);
   oceanMat.uniforms.uTime.value = simT;
   sunLight.position.set(S.x, 0, S.z).addScaledVector(sunDir, 50);
