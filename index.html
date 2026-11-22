@@ -43,6 +43,9 @@
   #photoBar { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); display:none; gap:8px; align-items:center; color:#fff; font-size:13px; text-shadow:0 1px 2px #000; }
   body.photo #hud, body.photo #help, body.photo #wind, body.photo #map, body.photo #toolbar, body.photo #modePanel, body.photo #toast { display:none !important; }
   body.photo #photoBar { display:flex; }
+  #credit { position:fixed; right:12px; bottom:6px; font-size:10px; color:#fffb; text-shadow:0 1px 2px #000; }
+  #credit a { color:#fffb; }
+  body.photo #credit { display:none; }
   @media (max-width: 700px) { #toolbar { top:auto; bottom:84px; flex-wrap:wrap; justify-content:center; width:92vw; } #modePanel { top:12px; font-size:13px; } #map { display:none; } #hud { transform:scale(.8); transform-origin:top left; } #help { font-size:12px; } }
 </style>
 </head>
@@ -66,6 +69,7 @@
 <div id="toast"></div>
 <div id="help"></div>
 <div id="rec">● REC</div>
+<div id="credit">Wing 3D model: <a href="https://sketchfab.com/3d-models/wing-foil-surf-4m-de7220b1b4ec4337b325cd02d5742b11" target="_blank" rel="noopener">“Wing Foil surf 4m”</a> by <a href="https://sketchfab.com/casamoderna" target="_blank" rel="noopener">casamoderna</a>, <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a> (modified)</div>
 <div id="toolbar">
   <button id="bMode" title="G">Free ride</button><button id="bTod" title="L">☀ Day</button><button id="bCol" title="U">🎨 Colours</button>
   <button id="bPhoto" title="O">📷 Photo</button><button id="bSnd" title="N">🔊</button><button id="bRec" title="R">⏺</button>
@@ -84,6 +88,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 const clamp = THREE.MathUtils.clamp, lerp = THREE.MathUtils.lerp, D2R = Math.PI / 180;
@@ -799,6 +804,53 @@ function makeAI(pal, i) {
   return e;
 }
 AI_PALETTES.forEach(makeAI);
+
+// ---- real 3D wing asset (CC BY 4.0, see credit): replaces the procedural inflatable wing once loaded
+function useWingModel(gltf) {
+  const node = gltf.scene.getObjectByName('wing'), ex = node.userData;
+  const parts = {}; node.traverse(c => { if (c.isMesh) parts[c.material.name] = c; });
+  const H = ex.handles;                                               // sorted front -> back
+  const handles = [V3(0, H[3][1], H[3][2]), V3(0, H[5][1], H[5][2])];  // front hand / back hand
+  // strut: along the centre line, just on the rider side of the canopy
+  const cp = parts.canopy.geometry.attributes.position, strutPts = [];
+  for (let k = 0; k < 9; k++) {
+    const z0 = -0.2 - k * 0.2; let y = -9;
+    for (let i = 0; i < cp.count; i++) if (Math.abs(cp.getX(i)) < 0.1 && Math.abs(cp.getZ(i) - z0) < 0.12) y = Math.max(y, cp.getY(i));
+    if (y > -9) strutPts.push(V3(0, y + 0.05, z0));
+  }
+  const strutGeo = strutPts.length > 2 ? new THREE.TubeGeometry(new THREE.CatmullRomCurve3(strutPts), 30, 0.055, 12, false) : null;
+  const wingGears = riders.map(r => r.ai ? r.gear : gears.wing).filter(g => !g.cfg.soft);
+  for (const g of wingGears) {
+    g.group.children.forEach(c => { c.visible = false; });
+    const canopyMat = new THREE.MeshStandardMaterial({ map: canopyTexture(g.cfg), roughness: 0.6, side: THREE.DoubleSide, transparent: true, opacity: 0.94 });
+    const canopy = new THREE.Mesh(parts.canopy.geometry.clone(), canopyMat);
+    const tube = new THREE.Mesh(parts.tube.geometry, M.dacron), hd = new THREE.Mesh(parts.handles.geometry, M.handle);
+    g.group.add(canopy, tube, hd);
+    if (strutGeo) g.group.add(new THREE.Mesh(strutGeo, M.dacron));
+    [canopy, tube, hd].forEach(m => { m.castShadow = true; m.receiveShadow = true; });
+    g.cfg.handles = handles; g.canopy = canopy; g.model = true;
+    // clearance samples: a spread of canopy + tube vertices
+    g.samples = [];
+    const add = (geo, step) => { const pp = geo.attributes.position; for (let i = 0; i < pp.count; i += step) g.samples.push(V3(pp.getX(i), pp.getY(i), pp.getZ(i))); };
+    add(canopy.geometry, 12); add(parts.tube.geometry, 50);
+    // luffing: the back of the canopy flaps along its normal (uv.y: 1 at the leading edge, 0 at the trailing edge)
+    const base = canopy.geometry.attributes.position.array.slice(), nrm = canopy.geometry.attributes.normal.array.slice(), uvs = canopy.geometry.attributes.uv.array;
+    g.flutter = (luff, t) => {
+      const pa = canopy.geometry.attributes.position;
+      if (luff < 0.02 && !g.fluttering) return;
+      g.fluttering = luff >= 0.02;
+      for (let i = 0; i < pa.count; i++) {
+        const back = smooth(0.35, 1, 1 - uvs[i * 2 + 1]), a = luff * 0.08 * back * Math.sin(14 * t + base[i * 3] * 4 - uvs[i * 2 + 1] * 6);
+        pa.array[i * 3] = base[i * 3] + nrm[i * 3] * a; pa.array[i * 3 + 1] = base[i * 3 + 1] + nrm[i * 3 + 1] * a; pa.array[i * 3 + 2] = base[i * 3 + 2] + nrm[i * 3 + 2] * a;
+      }
+      pa.needsUpdate = true;
+    };
+  }
+  window.__wingModel = true;
+  window.__onWingModel?.();
+}
+if (!new URLSearchParams(location.search).has('procedural'))
+  new GLTFLoader().load('models/wing-casamoderna.glb', useWingModel, undefined, err => console.warn('wing model not loaded, keeping the procedural wing', err));
 const keys = {};
 const touch = { steer: 0 };
 const isTouch = matchMedia('(pointer: coarse)').matches;
@@ -1149,7 +1201,8 @@ function pose(e, dt, t) {
   g.position.copy(ridePos.lerp(crashPos, crashBlend));
   g.updateMatrixWorld(true);
   const luff = 1 - smooth(2, 9, S.aoa);
-  updateCanopy(gear, (cfg.soft ? 0.08 : 0.055) + 0.05 * clamp(S.wingForce / 500, 0, 1), luff * (1 - crashBlend), t);
+  if (!gear.model) updateCanopy(gear, (cfg.soft ? 0.08 : 0.055) + 0.05 * clamp(S.wingForce / 500, 0, 1), luff * (1 - crashBlend), t);
+  else gear.flutter(luff * (1 - crashBlend), t);
 
   // ---- arms: each shoulder takes the handle on its side
   const hA = rider.worldToLocal(g.localToWorld(cfg.handles[0].clone()));
@@ -1617,13 +1670,13 @@ const tlog = [];
 let minClear = 9, minHead = 9, nFr = 0, nClose = 0;     // lowest gear point minus floor, over the run (test of the anti-clipping)
 // ?inspect=wing|para&ang=deg&elev=deg : the gear alone, held overhead like an umbrella, for modelling checks
 const inspect = params.get('inspect');
-if (inspect) { setGear(inspect); board.visible = false; for (const id of ['hud', 'help', 'wind', 'map', 'toast']) $(id).style.display = 'none'; }
+if (inspect) { setGear(inspect); for (const r of riders) { r.board.visible = false; if (r.ai) r.gear.group.visible = false; } for (const id of ['hud', 'help', 'wind', 'map', 'toast', 'toolbar', 'credit']) $(id).style.display = 'none'; }
 function tick(dt) {
   if (inspect) {
     simT += dt;
     gear.group.position.set(0, 2.2, 0.8);
     gear.group.quaternion.setFromEuler(new THREE.Euler(0.25, 0, Math.PI));
-    updateCanopy(gear, 0.1, 0, simT);
+    if (!gear.model) updateCanopy(gear, 0.1, 0, simT);
     const a = (+params.get('ang') || 0) * D2R, e = (+(params.get('elev') ?? 15)) * D2R;
     camera.position.set(Math.sin(a) * Math.cos(e) * 5, 1.6 + Math.sin(e) * 5, Math.cos(a) * Math.cos(e) * 5);
     camera.lookAt(0, 1.7, 0); camPos.copy(camera.position); camLook.set(0, 1.7, 0);
@@ -1645,10 +1698,14 @@ if (params.has('dolphins')) podTimer = +params.get('dolphins');
 if (params.has('tod')) setTimeOfDay(+params.get('tod'));
 if (params.has('mode')) setMode(params.get('mode'));
 const warm = +params.get('warm') || 0, jumpAt = +params.get('jumpAt') || -1;
+function warmUp() {
 for (let i = 0; i < warm * 60; i++) { tick(1 / 60); if (jumpAt > 0 && Math.abs(simT - jumpAt) < 0.009) jump(me); }
 if (params.has('photo')) togglePhoto();
 if (params.has('colors')) toggleColors();
 if (params.has('log')) console.log('LOG minClearAboveHull=' + minClear.toFixed(2) + ' minGapToBody=' + minHead.toFixed(2) + ' framesUnder30cm=' + nClose + '/' + nFr + '\n' + tlog.join('\n'));
+}
+// with ?waitModel the warm-up starts once the wing model is in (so test stats use it)
+if (params.has('waitModel') && !params.has('procedural')) window.__onWingModel = warmUp; else warmUp();
 let last = performance.now(), mapT = 0;
 function frame(now) {
   const dt = clamp((now - last) / 1000, 0, 0.05); last = now;   // rAF time can precede performance.now()

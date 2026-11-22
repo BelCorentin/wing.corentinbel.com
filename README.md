@@ -4,6 +4,11 @@ A small wingfoiling simulator in the browser: live at https://wing.corentinbel.c
 
 Single `index.html`, Three.js from a CDN, everything procedural (no downloaded assets): Gerstner-wave ocean with wind chop, sky, board + foil, inflatable wing or parawing, rider (capsule rig + 2-bone IK), spray, wake, wind streaks.
 
+## 3D wing model
+The inflatable wing is a real 3D asset: `models/wing-casamoderna.glb`, built from **“Wing Foil surf 4m”** (https://sketchfab.com/3d-models/wing-foil-surf-4m-de7220b1b4ec4337b325cd02d5742b11) by **casamoderna** (https://sketchfab.com/casamoderna), licensed **CC BY 4.0** (http://creativecommons.org/licenses/by/4.0/).
+Modified: re-oriented to the game's axes, split into canopy / leading-edge tube / handles, UVs added for the paint scheme, leading edge bent into a deeper arch (0.75 m at the tips); a strut tube is added in the game. Credit shown on the page and stored in the GLB.
+Rebuild (numpy + scipy): `python tools/wing2glb.py <scene.gltf from Sketchfab> models/wing-casamoderna.glb tools 0.75`. `?procedural` uses the old procedural wing; the parawing stays procedural.
+
 ## Controls
 Simple (default): A/D steer · W/S more / less power · Space pump (keep a rhythm) · J jump · Q wing ⇄ parawing · G mode · L light · C camera · P autopilot · Tab pro controls.
 Pro: W/S front/back foot · ↑/↓ or wheel wing power · Space leg pump · E wing pump (together = combo) · T foot assist · M wind map.
